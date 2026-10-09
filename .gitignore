@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 面板运行时数据（任务凭证、日志、数据库）
+tasks/
+panel.db
+panel.conf
+
+# 系统文件
+.DS_Store

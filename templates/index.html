@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>OCI ARM 抢机面板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1420;color:#e6ebf4;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;min-height:100vh}
+a{color:#6cb8ff}
+.wrap{max-width:860px;margin:0 auto;padding:16px 14px 60px}
+h1{font-size:20px;margin:6px 0 14px}
+h1 small{font-size:12px;color:#8b94a7;font-weight:normal}
+.card{background:#182032;border:1px solid #26314a;border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spread{justify-content:space-between}
+.muted{color:#8b94a7;font-size:13px}
+input,select,textarea{width:100%;background:#0f1626;border:1px solid #2b3652;color:#e6ebf4;border-radius:8px;padding:10px 12px;font-size:14px;margin-top:6px}
+textarea{font-family:monospace;font-size:12px;min-height:110px;resize:vertical}
+label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
+.btn{display:inline-block;background:#2f6fed;border:none;color:#fff;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer}
+.btn:active{opacity:.85}
+.btn.ghost{background:#232d47}
+.btn.danger{background:#a33a3a}
+.btn.small{padding:6px 12px;font-size:13px}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:bold}
+.b-running{background:#123f22;color:#4ade80}
+.b-success{background:#123a5e;color:#6cb8ff}
+.b-failed{background:#4a1d1d;color:#ff7b7b}
+.b-stopped{background:#3a3a3a;color:#aaa}
+.task{cursor:pointer}
+.task:hover{border-color:#3b4a6e}
+.task .t{font-weight:bold;font-size:16px}
+.task .meta{color:#8b94a7;font-size:13px;margin-top:6px}
+#log{background:#0a0e18;border:1px solid #26314a;border-radius:8px;padding:10px;font-family:monospace;font-size:12px;line-height:1.55;height:380px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.mlog{background:#0a0e18;border:1px solid #26314a;border-radius:8px;padding:10px;font-family:monospace;font-size:12px;line-height:1.55;height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:4px 10px;font-size:14px;margin:8px 0}
+.kv b{color:#8b94a7;font-weight:normal}
+.result{background:#0f1c30;border:1px solid #2c4a75;border-radius:8px;padding:12px;margin-top:10px}
+.hide{display:none!important}
+.hint{background:#1a2338;border-left:3px solid #2f6fed;padding:10px 12px;border-radius:0 8px 8px 0;font-size:13px;color:#a9b4c9;margin:10px 0}
+.hint ol{margin:6px 0 0 18px}
+.err{color:#ff7b7b;background:#2a1414;border:1px solid #5a2626;padding:10px;border-radius:8px;margin:10px 0;font-size:14px}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.osgrid label{margin:0;background:#0f1626;border:1px solid #2b3652;border-radius:8px;padding:10px;text-align:center;cursor:pointer;font-size:14px}
+.osgrid input{display:none}
+.osgrid input:checked+span{color:#6cb8ff;font-weight:bold}
+.osgrid label:has(input:checked){border-color:#2f6fed;background:#14203a}
+.osgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+#regionSel{margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- 主界面 -->
+<div id="main">
+  <div class="topbar">
+    <h1>OCI 面板 <small>v1.4</small></h1>
+    <div class="row">
+      <button class="btn small" id="tabTaskBtn" onclick="showTab('task')">抢机任务</button>
+      <button class="btn ghost small" id="tabMgmtBtn" onclick="showTab('mgmt')">机器管理</button>
+    </div>
+  </div>
+  <div id="taskView">
+  <button class="btn" onclick="showNew()">＋ 新建抢机任务</button>
+  <div style="height:12px"></div>
+  <div id="taskList"></div>
+
+  <!-- 新建任务 -->
+  <div id="newForm" class="card hide">
+    <h1 style="font-size:17px">新建任务</h1>
+    <div class="hint">API 凭证获取：OCI 控制台 → 右上角人像 → <b>API 密钥</b> → 添加 API 密钥，下载私钥。<br>填写一次后会自动保存在<b>本浏览器本地</b>，下次直接沿用（只有点"开始抢机"时才会发送到服务器）。<br><a href="javascript:void(0)" onclick="clearApiCache()" style="font-size:13px">清除本浏览器保存的 API 信息</a></div>
+    <label>Tenancy OCID</label><input id="f_tenancy" placeholder="ocid1.tenancy.oc1..">
+    <label>User OCID</label><input id="f_user" placeholder="ocid1.user.oc1..">
+    <label>API 密钥指纹</label><input id="f_fp" placeholder="aa:bb:cc:…（16 组）">
+    <label>API 私钥</label>
+    <div class="row" style="margin-top:6px">
+      <label class="btn ghost small" style="cursor:pointer;margin:0">📁 上传私钥文件
+        <input type="file" id="f_keyfile" accept=".pem,.key,.txt,*/*" style="display:none">
+      </label>
+      <span class="muted">或粘贴 PEM 全文到下方</span>
+    </div>
+    <textarea id="f_key" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+    <label>目标区域（甲骨文全部可开区域）</label><select id="f_region"></select>
+    <label>实例规格（免费额度内：总计 ≤4 OCPU / ≤24GB 内存）</label>
+    <div class="row">
+      <div style="flex:1;min-width:120px"><label style="margin-top:0">OCPU（1-4）</label><input id="f_ocpu" type="number" value="4" min="1" max="4"></div>
+      <div style="flex:1;min-width:120px"><label style="margin-top:0">内存 GB（1-24）</label><input id="f_mem" type="number" value="24" min="1" max="24"></div>
+    </div>
+    <label>系统镜像（细分版本，实时从甲骨文获取）</label>
+    <div class="row">
+      <button class="btn ghost small" id="imgLoadBtn" onclick="loadImages()">🔄 获取该区域镜像列表</button>
+    </div>
+    <select id="f_image" style="margin-top:8px" onchange="imgSelChanged()">
+      <option value="">— 请先填 API 信息、选区域，再点上面获取 —</option>
+    </select>
+    <div id="imgManualWrap" class="hide" style="margin-top:8px">
+      <input id="f_image_manual" placeholder="手动输入镜像 OCID（ocid1.image.oc1..）">
+      <div class="osgrid" style="margin-top:8px">
+        <label><input type="radio" name="oscm" value="Oracle Linux" checked><span>Oracle Linux（opc）</span></label>
+        <label><input type="radio" name="oscm" value="Canonical Ubuntu"><span>Ubuntu（ubuntu）</span></label>
+      </div>
+      <div class="hint">手动输入时请选择系统类型，用于匹配 SSH 用户名</div>
+    </div>
+    <label>SSH 登录方式</label>
+    <div class="osgrid" id="f_sshmode">
+      <label><input type="radio" name="sshmode" value="key" checked><span>🔑 密钥登录</span></label>
+      <label><input type="radio" name="sshmode" value="password"><span>🔒 密码登录</span></label>
+    </div>
+    <div id="pwRow" class="hide">
+      <label>登录密码（6-64 位，不能含空格；用户名按系统自动匹配）</label>
+      <input id="f_sshpw" type="text" placeholder="自己设置一个登录密码" autocomplete="new-password">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1;min-width:140px"><label style="margin-top:0">实例名</label><input id="f_name" value="oci-arm-1"></div>
+      <div style="width:110px"><label style="margin-top:0">启动卷 GB</label><input id="f_boot" type="number" value="50" min="50" max="200"></div>
+      <div style="width:110px"><label style="margin-top:0">重试间隔秒</label><input id="f_interval" type="number" value="45" min="5" max="3600"></div>
+    </div>
+    <div id="newErr" class="err hide"></div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="createTask()">开始抢机</button>
+      <button class="btn ghost" onclick="hideNew()">取消</button>
+    </div>
+  </div>
+
+  <!-- 任务详情 -->
+  <div id="detail" class="card hide">
+    <div class="row spread"><h1 style="font-size:17px;margin:0" id="d_title"></h1><span id="d_badge"></span></div>
+    <div class="kv" id="d_kv"></div>
+    <div id="d_result"></div>
+    <div class="row" style="margin:10px 0" id="d_btns"></div>
+    <div class="muted" style="margin-bottom:6px">实时日志（每 2 秒刷新）</div>
+    <div id="log"></div>
+    <div style="margin-top:10px"><button class="btn ghost small" onclick="backList()">← 返回列表</button></div>
+  </div>
+  </div><!-- /taskView -->
+
+  <!-- 机器管理 -->
+  <div id="mgmtView" class="hide">
+    <div class="card">
+      <h1 style="font-size:17px">账号</h1>
+      <div class="row">
+        <select id="m_account" style="flex:1;margin-top:0"></select>
+        <button class="btn ghost small" onclick="document.getElementById('acctForm').classList.toggle('hide')">＋ 添加</button>
+        <button class="btn ghost small" onclick="delAccount()">删除</button>
+      </div>
+      <div id="acctForm" class="hide" style="margin-top:10px;border-top:1px solid #26314a;padding-top:10px">
+        <label>账号备注名</label><input id="a_name" placeholder="如：我的甲骨文">
+        <label>Tenancy OCID</label><input id="a_tenancy" placeholder="ocid1.tenancy.oc1..">
+        <label>User OCID</label><input id="a_user" placeholder="ocid1.user.oc1..">
+        <label>API 密钥指纹</label><input id="a_fp" placeholder="aa:bb:cc:…">
+        <label>API 私钥</label>
+        <div class="row" style="margin-top:6px">
+          <label class="btn ghost small" style="cursor:pointer;margin:0">📁 上传私钥文件
+            <input type="file" id="a_keyfile" accept=".pem,.key,.txt,*/*" style="display:none">
+          </label>
+        </div>
+        <textarea id="a_key" placeholder="-----BEGIN PRIVATE KEY-----&#10;…"></textarea>
+        <div class="hint">账号信息只保存在<b>本浏览器本地</b>，扫描/操作时才发送到服务器（内存中使用，不存盘）。</div>
+        <button class="btn" onclick="saveAccount()">保存账号</button>
+      </div>
+    </div>
+    <button class="btn" id="scanBtn" onclick="scanMachines()">🔍 扫描该账号下的机器</button>
+    <div style="height:12px"></div>
+    <div id="mgmtList"><div class="muted">选择账号后点扫描，会列出该账号所有区域的机器。</div></div>
+  </div>
+
+</div>
+
+<script>
+let META={regions:[],specs:[],os_choices:[]};
+let curTask=null, logTimer=null, logOffset=0;
+const CACHE_KEY='oci_panel_api_cache';
+
+// ---- API 信息本地缓存 ----
+function saveApiCache(){
+  try{
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      tenancy:document.getElementById('f_tenancy').value.trim(),
+      user_ocid:document.getElementById('f_user').value.trim(),
+      fingerprint:document.getElementById('f_fp').value.trim(),
+      private_key:document.getElementById('f_key').value.trim()
+    }));
+  }catch(e){}
+}
+function loadApiCache(){
+  try{
+    const c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
+    if(!c)return false;
+    if(c.tenancy)document.getElementById('f_tenancy').value=c.tenancy;
+    if(c.user_ocid)document.getElementById('f_user').value=c.user_ocid;
+    if(c.fingerprint)document.getElementById('f_fp').value=c.fingerprint;
+    if(c.private_key)document.getElementById('f_key').value=c.private_key;
+    return !!(c.tenancy||c.user_ocid);
+  }catch(e){return false;}
+}
+function clearApiCache(){
+  try{localStorage.removeItem(CACHE_KEY);}catch(e){}
+  document.getElementById('f_tenancy').value='';
+  document.getElementById('f_user').value='';
+  document.getElementById('f_fp').value='';
+  document.getElementById('f_key').value='';
+  alert('已清除本浏览器保存的 API 信息');
+}
+
+async function api(path,method,body){
+  const r=await fetch(path,{method:method||'GET',
+    headers:{'Content-Type':'application/json'},
+    body:body?JSON.stringify(body):undefined});
+  if(r.status===401){location.reload();throw 0;}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||('请求失败 '+r.status));
+  return j;
+}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function jsq(s){return String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
+function badge(s){const m={running:['b-running','抢机中'],success:['b-success','已抢到'],failed:['b-failed','失败'],stopped:['b-stopped','已停止']};const x=m[s]||['b-stopped',s];return `<span class="badge ${x[0]}">${x[1]}</span>`}
+// 实例生命周期状态徽标（机器管理用，不复用抢机任务的 badge）
+function instBadge(st){const m={RUNNING:['b-running','运行中'],STOPPED:['b-stopped','已停止'],STARTING:['b-success','启动中'],STOPPING:['b-success','停止中'],PROVISIONING:['b-success','创建中'],TERMINATING:['b-failed','终止中'],TERMINATED:['b-failed','已终止']};const x=m[st]||['b-stopped',st];return `<span class="badge ${x[0]}">${x[1]}</span>`}
+function fmtDur(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return h?`${h}小时${m}分`:(m?`${m}分`:`${s}秒`)}
+
+async function enter(){
+  META=await api('/api/meta');
+  const groups={};
+  META.regions.forEach(r=>{(groups[r.group]=groups[r.group]||[]).push(r);});
+  document.getElementById('f_region').innerHTML=`<option value="" disabled selected>— 请选择区域 —</option>`+Object.entries(groups).map(([g,rs])=>
+    `<optgroup label="${g}">`+rs.map(r=>`<option value="${r.code}">${r.code} ${r.name}</option>`).join('')+`</optgroup>`
+  ).join('');
+  // 区域变更后，已加载的镜像列表失效
+  document.getElementById('f_region').addEventListener('change',()=>{
+    document.getElementById('f_image').innerHTML='<option value="">— 区域已变更，请重新获取镜像列表 —</option>';
+    document.getElementById('imgManualWrap').classList.add('hide');
+  });
+  // SSH 方式切换
+  document.querySelectorAll('input[name=sshmode]').forEach(r=>r.addEventListener('change',()=>{
+    document.getElementById('pwRow').classList.toggle('hide',
+      document.querySelector('input[name=sshmode]:checked').value!=='password');
+  }));
+  // 私钥文件上传
+  document.getElementById('f_keyfile').addEventListener('change',e=>{
+    const f=e.target.files[0]; if(!f)return;
+    const rd=new FileReader();
+    rd.onload=()=>{document.getElementById('f_key').value=rd.result;};
+    rd.readAsText(f);
+  });
+  loadApiCache();
+  refreshList();setInterval(refreshList,5000);
+}
+document.addEventListener('DOMContentLoaded',enter);
+
+async function refreshList(){
+  if(curTask)return;
+  const ts=await api('/api/tasks');
+  document.getElementById('taskList').innerHTML=ts.length?ts.map(t=>`
+    <div class="card task" onclick="openTask('${t.id}')">
+      <div class="row spread"><span class="t">${esc(t.name)}</span>${badge(t.status)}</div>
+      <div class="meta">${t.region} · ${esc(t.spec||'')} · ${t.ssh_mode==='password'?'密码登录':'密钥登录'} · 尝试 ${t.attempts} 次 · 已运行 ${fmtDur(t.elapsed)}</div>
+    </div>`).join(''):'<div class="muted">暂无任务，点上面按钮新建一个。</div>';
+}
+
+function showNew(){document.getElementById('newForm').classList.remove('hide');window.scrollTo(0,document.body.scrollHeight);}
+function hideNew(){document.getElementById('newForm').classList.add('hide');}
+
+// ---- 镜像列表（细分版本） ----
+async function loadImages(){
+  const btn=document.getElementById('imgLoadBtn');
+  const region=document.getElementById('f_region').value;
+  const creds={tenancy:document.getElementById('f_tenancy').value.trim(),
+    user_ocid:document.getElementById('f_user').value.trim(),
+    fingerprint:document.getElementById('f_fp').value.trim(),
+    private_key:document.getElementById('f_key').value.trim()};
+  if(!region){alert('请先选择目标区域');return;}
+  if(!creds.tenancy||!creds.user_ocid||!creds.fingerprint||!creds.private_key){alert('请先填写完整 API 信息');return;}
+  btn.disabled=true;btn.textContent='⏳ 获取中…';
+  try{
+    const r=await api('/api/mgmt/images','POST',Object.assign(creds,{region:region}));
+    const sel=document.getElementById('f_image');
+    if(!r.images.length){sel.innerHTML='<option value="">该区域未找到 ARM 兼容镜像</option>';return;}
+    const groups={};
+    r.images.forEach(im=>{(groups[im.os]=groups[im.os]||[]).push(im);});
+    sel.innerHTML=Object.entries(groups).map(([os,ims])=>
+      `<optgroup label="${esc(os)}">`+ims.map(im=>
+        `<option value="${im.id}" data-os="${esc(im.os)}" data-label="${esc(im.label)}">${esc(im.label)}（${esc(im.time)}）</option>`).join('')+`</optgroup>`
+    ).join('')+`<option value="manual">✏️ 手动输入镜像 OCID…</option>`;
+    document.getElementById('imgManualWrap').classList.add('hide');
+  }catch(e){alert('获取镜像列表失败：'+e.message);}
+  finally{btn.disabled=false;btn.textContent='🔄 获取该区域镜像列表';}
+}
+function imgSelChanged(){
+  const v=document.getElementById('f_image').value;
+  document.getElementById('imgManualWrap').classList.toggle('hide',v!=='manual');
+}
+
+async function createTask(){
+  const e=document.getElementById('newErr');e.classList.add('hide');
+  const imgSel=document.getElementById('f_image');
+  let image_id='',image_os='',image_label='';
+  if(imgSel.value==='manual'){
+    image_id=document.getElementById('f_image_manual').value.trim();
+    image_os=(document.querySelector('input[name=oscm]:checked')||{}).value||'Oracle Linux';
+    image_label=image_os+'（手动）';
+    if(!image_id.startsWith('ocid1.image.')){e.textContent='镜像 OCID 格式不对';e.classList.remove('hide');return;}
+  }else if(imgSel.value){
+    const opt=imgSel.selectedOptions[0];
+    image_id=imgSel.value;image_os=opt.dataset.os;image_label=opt.dataset.label;
+  }else{
+    e.textContent='请先获取镜像列表并选择系统版本';e.classList.remove('hide');return;
+  }
+  const sshmode=(document.querySelector('input[name=sshmode]:checked')||{}).value||'key';
+  const body={tenancy:document.getElementById('f_tenancy').value.trim(),
+    user_ocid:document.getElementById('f_user').value.trim(),
+    fingerprint:document.getElementById('f_fp').value.trim(),
+    private_key:document.getElementById('f_key').value.trim(),
+    region:document.getElementById('f_region').value,
+    ocpus:document.getElementById('f_ocpu').value,
+    mem:document.getElementById('f_mem').value,
+    image_id:image_id, image_os:image_os, image_label:image_label, ssh_mode:sshmode,
+    ssh_password:document.getElementById('f_sshpw').value,
+    name:document.getElementById('f_name').value.trim(),
+    boot_gb:document.getElementById('f_boot').value,
+    interval:document.getElementById('f_interval').value};
+  saveApiCache(); // 创建任务时把 API 信息存到本浏览器
+  try{
+    const r=await api('/api/tasks','POST',body);
+    hideNew();openTask(r.id);
+  }catch(err){e.textContent=err.message;e.classList.remove('hide');}
+}
+
+async function openTask(id){
+  curTask=id;logOffset=0;document.getElementById('log').innerHTML='';
+  document.getElementById('taskList').classList.add('hide');
+  document.getElementById('newForm').classList.add('hide');
+  document.getElementById('detail').classList.remove('hide');
+  await refreshDetail();
+  clearInterval(logTimer);logTimer=setInterval(refreshDetail,2000);
+}
+function backList(){curTask=null;clearInterval(logTimer);
+  document.getElementById('detail').classList.add('hide');
+  document.getElementById('taskList').classList.remove('hide');refreshList();}
+
+async function refreshDetail(){
+  if(!curTask)return;
+  const t=await api('/api/tasks/'+curTask);
+  document.getElementById('d_title').textContent=t.name;
+  document.getElementById('d_badge').innerHTML=badge(t.status);
+  document.getElementById('d_kv').innerHTML=`
+    <b>区域</b><span>${t.region}</span><b>规格</b><span>${esc(t.spec)}</span>
+    <b>系统</b><span>${esc(t.os)}</span><b>登录方式</b><span>${t.ssh_mode==='password'?'🔒 密码登录':'🔑 密钥登录'}</span>
+    <b>启动卷</b><span>${t.boot_gb} GB</span><b>重试间隔</b><span>${t.interval} 秒</span>
+    <b>尝试次数</b><span>${t.attempts}</span><b>已运行</b><span>${fmtDur(t.elapsed)}</span>`;
+  const r=t.result||{};
+  document.getElementById('d_result').innerHTML=r['公网 IP']?`
+    <div class="result"><b>🎉 抢机成功！</b><div class="kv" style="margin-top:8px">
+    <b>公网 IP</b><span>${esc(r['公网 IP'])}</span><b>内网 IP</b><span>${esc(r['内网 IP']||'-')}</span>
+    <b>SSH</b><span style="font-size:12px">${esc(r['SSH']||'')}</span></div></div>`:'';
+  let btns='';
+  if(t.has_key)btns+=`<a class="btn small" href="/api/tasks/${curTask}/sshkey">⬇ 下载 SSH 私钥</a>`;
+  if(t.status==='running')btns+=`<button class="btn danger small" onclick="stopTask()">⏹ 停止</button>`;
+  btns+=`<button class="btn ghost small" onclick="delTask()">删除任务</button>`;
+  document.getElementById('d_btns').innerHTML=btns;
+  const lg=await api(`/api/tasks/${curTask}/log?offset=${logOffset}`);
+  logOffset=lg.offset;
+  if(lg.lines.length){const el=document.getElementById('log');
+    el.innerHTML+=lg.lines.map(l=>esc(l)).join('\n')+'\n';
+    el.scrollTop=el.scrollHeight;}
+}
+
+async function stopTask(){if(!confirm('确定停止这个抢机任务吗？'))return;await api(`/api/tasks/${curTask}/stop`,'POST');refreshDetail();}
+async function delTask(){if(!confirm('删除任务将同时删除其凭证与日志，确定吗？'))return;await api(`/api/tasks/${curTask}`,'DELETE');backList();}
+
+// ================= 机器管理 =================
+const ACCT_KEY='oci_panel_accounts';
+let mgmtTimers={};
+
+function showTab(which){
+  const isTask=which==='task';
+  document.getElementById('taskView').classList.toggle('hide',!isTask);
+  document.getElementById('mgmtView').classList.toggle('hide',isTask);
+  document.getElementById('tabTaskBtn').className='btn small'+(isTask?'':' ghost');
+  document.getElementById('tabMgmtBtn').className='btn small'+(isTask?' ghost':'');
+  if(!isTask)renderAccounts();
+}
+function getAccounts(){
+  try{return JSON.parse(localStorage.getItem(ACCT_KEY)||'[]');}catch(e){return [];}
+}
+function setAccounts(a){try{localStorage.setItem(ACCT_KEY,JSON.stringify(a));}catch(e){}}
+function renderAccounts(){
+  const accs=getAccounts(),sel=document.getElementById('m_account');
+  sel.innerHTML=accs.length?accs.map((a,i)=>`<option value="${i}">${esc(a.name)}</option>`).join(''):'<option value="">— 请先添加账号 —</option>';
+}
+function curAccount(){
+  const accs=getAccounts(),i=document.getElementById('m_account').value;
+  return accs[i]||null;
+}
+function saveAccount(){
+  const a={name:document.getElementById('a_name').value.trim()||'未命名账号',
+    tenancy:document.getElementById('a_tenancy').value.trim(),
+    user_ocid:document.getElementById('a_user').value.trim(),
+    fingerprint:document.getElementById('a_fp').value.trim(),
+    private_key:document.getElementById('a_key').value.trim()};
+  if(!a.tenancy||!a.user_ocid||!a.fingerprint||!a.private_key){alert('请填完整账号信息');return;}
+  const accs=getAccounts();accs.push(a);setAccounts(accs);renderAccounts();
+  document.getElementById('m_account').value=String(accs.length-1);
+  document.getElementById('acctForm').classList.add('hide');
+  ['a_name','a_tenancy','a_user','a_fp','a_key'].forEach(id=>document.getElementById(id).value='');
+}
+function delAccount(){
+  const accs=getAccounts(),i=document.getElementById('m_account').value;
+  if(!accs[i]||!confirm('删除账号「'+accs[i].name+'」？（仅删除本浏览器保存的信息）'))return;
+  accs.splice(i,1);setAccounts(accs);renderAccounts();
+}
+function acctCreds(a){return {tenancy:a.tenancy,user_ocid:a.user_ocid,fingerprint:a.fingerprint,private_key:a.private_key};}
+
+async function scanMachines(){
+  const a=curAccount();
+  if(!a){alert('请先添加账号');return;}
+  const btn=document.getElementById('scanBtn'),list=document.getElementById('mgmtList');
+  btn.disabled=true;btn.textContent='⏳ 扫描中…';
+  list.innerHTML='<div class="muted">正在查询账号订阅区域及实例，请稍候…</div>';
+  try{
+    const r=await api('/api/mgmt/scan','POST',acctCreds(a));
+    if(!r.regions.length){list.innerHTML='<div class="muted">该账号下没有找到运行中的实例。</div>';return;}
+    list.innerHTML=r.regions.map(g=>`
+      <div class="card"><b>${g.region}</b> <span class="muted">${g.instances?g.instances.length+' 台':''}</span>
+      ${g.error?`<div class="err">${esc(g.error)}</div>`:''}
+      ${(g.instances||[]).map(i=>instCard(a,g.region,i)).join('')}</div>`).join('');
+  }catch(e){
+    list.innerHTML=`<div class="err">${esc(e.message)}</div>`;
+  }finally{btn.disabled=false;btn.textContent='🔍 扫描该账号下的机器';}
+}
+function instCard(a,region,i){
+  const spec=[i.ocpus?i.ocpus+'C':'',i.memory?i.memory+'G':''].filter(Boolean).join('');
+  return `<div class="card" style="margin:10px 0" id="inst-${i.id.slice(-12)}">
+    <div class="row spread"><span class="t">${esc(i.name)}</span>${instBadge(i.state)}</div>
+    <div class="meta">${region} · ${esc(i.shape)}${spec?' '+spec:''} · ${esc(i.ad||'')}</div>
+    <div class="meta">公网 <b>${esc(i.public_ip||'-')}</b> · 内网 ${esc(i.private_ip||'-')} · 创建 ${esc(i.created||'-')}</div>
+    <div class="row" style="margin-top:8px" id="btns-${i.id.slice(-12)}">
+      <button class="btn small" onclick="changeIp('${esc(region)}','${i.id}','${jsq(i.name)}')">🔄 换 IP</button>
+      <button class="btn danger small" onclick="delInstance('${esc(region)}','${i.id}','${jsq(i.name)}')">🗑 删除机器</button>
+    </div>
+    <div id="job-${i.id.slice(-12)}"></div>
+  </div>`;
+}
+async function delInstance(region,iid,name){
+  const a=curAccount();if(!a)return;
+  if(!confirm(`确定删除机器「${name}」吗？\n\n实例和启动卷都会被彻底删除，不可恢复！`))return;
+  startJob(a,'/api/mgmt/terminate',{region:region,instance_id:iid},iid,'删除机器');
+}
+async function changeIp(region,iid,name){
+  const a=curAccount();if(!a)return;
+  if(!confirm(`给「${name}」更换公网 IP？\n\n会先关机再开机（约 2-5 分钟），期间机器不可用。`))return;
+  startJob(a,'/api/mgmt/change-ip',{region:region,instance_id:iid},iid,'更换 IP');
+}
+async function startJob(a,url,extra,iid,label){
+  const key=iid.slice(-12),box=document.getElementById('job-'+key),btns=document.getElementById('btns-'+key);
+  btns.innerHTML='<span class="muted">⏳ '+label+'进行中…</span>';
+  try{
+    const r=await api(url,'POST',Object.assign(acctCreds(a),extra));
+    const job=r.job;
+    box.innerHTML=`<div class="mlog" style="margin-top:8px"></div>`;
+    const el=box.firstChild;
+    clearInterval(mgmtTimers[job]);
+    mgmtTimers[job]=setInterval(async()=>{
+      try{
+        const j=await api('/api/mgmt/jobs/'+job);
+        el.innerHTML=j.lines.map(l=>esc(l)).join('\n');
+        el.scrollTop=el.scrollHeight;
+        if(j.status!=='running'){
+          clearInterval(mgmtTimers[job]);
+          if(j.status==='done'){
+            el.innerHTML+=`\n<b style="color:#4ade80">✔ 完成${j.result&&j.result.new_ip?': '+esc(j.result.old_ip)+' → '+esc(j.result.new_ip):''}${j.result&&j.result.note?'（'+esc(j.result.note)+'）':''}${typeof j.result==='string'?'（'+esc(j.result)+'）':''}</b>`;
+            setTimeout(scanMachines,3000);
+          }else{
+            el.innerHTML+=`\n<b style="color:#ff7b7b">✘ 失败，请查看日志</b>`;
+          }
+          btns.innerHTML='<span class="muted">操作结束，列表即将刷新…</span>';
+        }
+      }catch(e){clearInterval(mgmtTimers[job]);}
+    },3000);
+  }catch(e){
+    box.innerHTML=`<div class="err">${esc(e.message)}</div>`;
+    btns.innerHTML='<span class="muted">启动失败</span>';
+  }
+}
+// 账号表单的私钥上传
+document.addEventListener('DOMContentLoaded',()=>{
+  const f=document.getElementById('a_keyfile');
+  if(f)f.addEventListener('change',e=>{
+    const file=e.target.files[0];if(!file)return;
+    const rd=new FileReader();rd.onload=()=>{document.getElementById('a_key').value=rd.result;};rd.readAsText(file);
+  });
+});
+</script>
+</body>
+</html>
