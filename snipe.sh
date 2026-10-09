@@ -105,14 +105,22 @@ ask_ocid() { # ask_ocid <变量名> <提示> [默认值]
 }
 
 # ---------- 1. 检查 / 安装 oci-cli ----------
+# 面板部署时 oci-cli 已在 venv；这里只在交互单独运行且 PATH 里没有 oci 时才尝试安装
 if ! command -v oci >/dev/null 2>&1; then
     warn "未找到 oci 命令, 尝试自动安装 oci-cli ..."
-    if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
-        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip \
-            || { err "apt 安装 python3-pip 失败, 请手动安装后重试"; exit 1; }
+    if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/pip" ]; then
+        "${VIRTUAL_ENV}/bin/pip" install -q oci-cli \
+            || { err "venv 安装 oci-cli 失败: ${VIRTUAL_ENV}/bin/pip install oci-cli"; exit 1; }
+        PATH="${VIRTUAL_ENV}/bin:$PATH"
+        export PATH
+    else
+        if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip \
+                || { err "apt 安装 python3-pip 失败, 请手动安装后重试"; exit 1; }
+        fi
+        pip3 install --break-system-packages -q oci-cli \
+            || { err "oci-cli 安装失败, 请手动执行: pip3 install --break-system-packages oci-cli"; exit 1; }
     fi
-    pip3 install --break-system-packages -q oci-cli \
-        || { err "oci-cli 安装失败, 请手动执行: pip3 install --break-system-packages oci-cli"; exit 1; }
     ok "oci-cli 安装完成: $(oci --version 2>/dev/null)"
 else
     say "oci-cli: $(oci --version 2>/dev/null)"

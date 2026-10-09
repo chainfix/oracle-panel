@@ -18,22 +18,58 @@
 
 ## 快速开始
 
-### 方式一：一键部署到服务器
+依赖：Debian/Ubuntu（或兼容的 dnf/yum）、**Python 3.9+**、systemd。抢机核心 `snipe.sh` 使用同一 venv 里的 `oci-cli`。
+
+### 方式一：在服务器上一键安装（推荐）
+
+SSH 登录到目标机器后执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chainfix/oracle-panel/main/install.sh | sudo bash
+```
+
+指定端口：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chainfix/oracle-panel/main/install.sh | sudo bash -s -- 5887
+```
+
+或先克隆再装：
+
+```bash
+git clone https://github.com/chainfix/oracle-panel.git
+cd oracle-panel
+sudo ./install.sh 5887
+```
+
+安装器会：
+- 安装 `python3` / `venv` / `pip` / `curl` / `git`
+- 把文件放到 `/opt/oci-panel`
+- 在 venv 里安装面板依赖和 `oci-cli`
+- 用系统用户 `oci-panel` 启动 `oci-panel.service`
+
+部署后访问 `http://你的服务器IP:5887/`。
+
+### 方式二：从本机推送到服务器
+
+在**已经 clone 了本仓库的电脑上**执行（需要能 SSH 到目标机）：
 
 ```bash
 ./deploy.sh root@你的服务器IP 5887
 ```
 
-部署后访问 `http://你的服务器IP:5887/`。
+它只负责把文件拷过去，真正安装仍由远端的 `install.sh` 完成。不要在服务器上把 `deploy.sh` 当安装器跑。
 
-### 方式二：手动运行
+### 方式三：手动运行
 
 ```bash
-python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+./venv/bin/pip install oci-cli
 ./venv/bin/python app.py   # 默认监听 0.0.0.0:5887
 ```
 
-依赖：Python 3.8+、`snipe.sh` 需在同一目录（抢机核心脚本）。
+`snipe.sh` 需在同一目录；请用 `./venv/bin` 里的 `python` / `oci`，不要用系统全局解释器。
 
 ## 准备 Oracle API 凭证
 
@@ -46,6 +82,7 @@ python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 - 面板本身无登录鉴权，适合内网 / 可信网络使用，公网部署请自行加反向代理鉴权
 - API 凭证缓存在各用户浏览器 localStorage；创建任务后会写入服务器该任务的独立目录（权限 600），删除任务时一并清除
 - 机器管理的账号凭证仅在内存中使用，不落盘
+- systemd 安装以 `oci-panel` 用户运行，不再默认用 root 跑面板
 
 ## 文件结构
 
@@ -53,12 +90,13 @@ python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 ├── app.py              # Flask 面板后端
 ├── snipe.sh            # 抢机核心脚本（也可独立交互使用）
 ├── templates/index.html# 前端页面
-├── deploy.sh           # 一键部署脚本
+├── install.sh          # 服务器本地一键安装（推荐）
+├── deploy.sh           # 本机 SSH 推送后调用远端 install.sh
 ├── requirements.txt
 └── panel.conf.example  # 配置示例
 ```
 
-`snipe.sh` 也可单独在服务器上交互运行：`./snipe.sh`。
+`snipe.sh` 也可单独在服务器上交互运行：`./snipe.sh`。若已用 `install.sh` 部署，请确保 `oci` 在 PATH 中（`/opt/oci-panel/venv/bin`）。
 
 ## License
 

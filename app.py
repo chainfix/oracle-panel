@@ -288,9 +288,12 @@ def create_task():
             f.write("%s=%s\n" % (k, shlex.quote(v)))
     os.chmod(os.path.join(oci_dir, "sniper.conf"), 0o600)
 
-    # 启动
-    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-           "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8"}
+    # 启动：把面板 venv 放进 PATH，让 snipe.sh 能找到同环境的 oci-cli
+    venv_bin = os.path.join(PANEL_DIR, "venv", "bin")
+    path_parts = [venv_bin, os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")]
+    env = {"PATH": os.pathsep.join(path_parts),
+           "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8",
+           "VIRTUAL_ENV": os.path.join(PANEL_DIR, "venv")}
     proc = subprocess.Popen(
         ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
