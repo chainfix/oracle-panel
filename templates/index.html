@@ -434,9 +434,13 @@ function instCard(a,region,i){
   return `<div class="card" style="margin:10px 0" id="inst-${i.id.slice(-12)}">
     <div class="row spread"><span class="t">${esc(i.name)}</span>${instBadge(i.state)}</div>
     <div class="meta">${region} · ${esc(i.shape)}${spec?' '+spec:''} · ${esc(i.ad||'')}</div>
-    <div class="meta">公网 <b>${esc(i.public_ip||'-')}</b> · 内网 ${esc(i.private_ip||'-')} · 创建 ${esc(i.created||'-')}</div>
+    <div class="meta">公网 <b>${esc(i.public_ip||'-')}</b> · 内网 ${esc(i.private_ip||'-')}${i.ipv6?' · IPv6 <b>'+esc(i.ipv6)+'</b>':''} · 创建 ${esc(i.created||'-')}</div>
     <div class="row" style="margin-top:8px" id="btns-${i.id.slice(-12)}">
       <button class="btn small" onclick="changeIp('${esc(region)}','${i.id}','${jsq(i.name)}')">🔄 换 IP</button>
+      ${i.ipv6
+        ? '<span class="muted" style="font-size:12px">✓ 已有 IPv6</span>'
+        : `<button class="btn small" onclick="enableIpv6('${esc(region)}','${i.id}','${jsq(i.name)}')">🌐 分配 IPv6</button>`}
+      <button class="btn small" onclick="rebootInstance('${esc(region)}','${i.id}','${jsq(i.name)}')">↻ 重启</button>
       <button class="btn danger small" onclick="delInstance('${esc(region)}','${i.id}','${jsq(i.name)}')">🗑 删除机器</button>
     </div>
     <div id="job-${i.id.slice(-12)}"></div>
@@ -449,8 +453,18 @@ async function delInstance(region,iid,name){
 }
 async function changeIp(region,iid,name){
   const a=curAccount();if(!a)return;
-  if(!confirm(`给「${name}」更换公网 IP？\n\n会先关机再开机（约 2-5 分钟），期间机器不可用。`))return;
+  if(!confirm(`给「${name}」更换公网 IP？\n\n会先删除旧 IP 再分配新 IP（约 1-2 分钟），实例不重启。`))return;
   startJob(a,'/api/mgmt/change-ip',{region:region,instance_id:iid},iid,'更换 IP');
+}
+async function enableIpv6(region,iid,name){
+  const a=curAccount();if(!a)return;
+  if(!confirm(`给「${name}」分配 IPv6？\n\n会依次：VCN 启用 IPv6 → 子网划 /64 → 路由加 ::/0 → 安全列表放行 → VNIC 分配地址。\n实例不重启，IPv4 不受影响。`))return;
+  startJob(a,'/api/mgmt/ipv6',{region:region,instance_id:iid},iid,'分配 IPv6');
+}
+async function rebootInstance(region,iid,name){
+  const a=curAccount();if(!a)return;
+  if(!confirm(`重启「${name}」？\n\n软重启（ACPI 关机再开机），约 1-2 分钟。`))return;
+  startJob(a,'/api/mgmt/reboot',{region:region,instance_id:iid},iid,'重启机器');
 }
 async function startJob(a,url,extra,iid,label){
   const key=iid.slice(-12),box=document.getElementById('job-'+key),btns=document.getElementById('btns-'+key);
