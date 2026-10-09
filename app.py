@@ -651,6 +651,7 @@ def mgmt_change_ip():
 
 def _do_change_ip(job_id, creds, region, iid):
     import oci
+    import time as _t
     cfg = _oci_cfg(creds, region)
     comp = oci.core.ComputeClient(cfg)
     vnet = oci.core.VirtualNetworkClient(cfg)
@@ -660,31 +661,74 @@ def _do_change_ip(job_id, creds, region, iid):
     if not old_pub:
         _job_done(job_id, {"note": "该实例没有公网 IP，无需更换"})
         return
+    _job_log(job_id, "实例: %s" % name)
     _job_log(job_id, "当前 IP: %s" % old_pub)
-    # 预留 IP 关机重启不会变，提前提示
+    # 预留 IP 不会变，提前提示
     try:
-        pubs = vnet.list_public_ips(creds["tenancy"], ip_address=old_pub).data
+        pubs = vnet.list_public_ips(
+            creds["tenancy"], scope="REGION",
+            ip_address=old_pub).data
         if pubs and getattr(pubs[0], "lifetime", "") == "RESERVED":
-            _job_done(job_id, {"note": "该实例绑定的是预留 IP，关机重启不会更换；如需换 IP 请先在控制台解绑预留 IP"})
+            _job_done(job_id, {"note": "该实例绑定的是预留 IP，无法更换临时 IP；如需换 IP 请先在控制台解绑预留 IP"})
             return
-    except Exception:  # noqa
-        pass
-    if inst.lifecycle_state != "STOPPED":
-        _job_log(job_id, "正在关机（释放旧 IP）...")
-        comp.instance_action(iid, "STOP")
-        _wait_state(comp, iid, "STOPPED", job_id)
-        _job_log(job_id, "已关机")
+    except Exception as e:  # noqa
+        _job_log(job_id, "预留 IP 检查跳过: %s" % str(e)[:120])
+    # 官方文档：stop 实例不会释放临时公网 IP（它跟随 VNIC/实例生命周期，
+    # 只有 terminate 才释放）。正确换法是删除当前临时 IP 再分配一个新的，
+    # 实例保持运行，无需重启。
+    atts = comp.list_vnic_attachments(creds["tenancy"], instance_id=iid).data
+    if not atts:
+        raise RuntimeError("找不到该实例的 VNIC")
+    vnic_id = atts[0].vnic_id
+    privs = vnet.list_private_ips(vnic_id=vnic_id).data
+    primary = next((p for p in privs if getattr(p, "is_primary", False)), None)
+    if not primary and privs:
+        primary = privs[0]
+    if not primary:
+        raise RuntimeError("找不到主私网 IP")
+    _job_log(job_id, "正在释放当前公网 IP（实例保持运行，无需重启）...")
+    cur_pub = vnet.get_public_ip_by_private_ip_id(
+        oci.core.models.GetPublicIpByPrivateIpIdDetails(
+            private_ip_id=primary.id)).data
+    vnet.delete_public_ip(cur_pub.id)
+    # 关键：必须等旧 IP 在 OCI 侧彻底删除（查不到为止），再分配新的；
+    # 否则数据层 NAT 新旧映射冲突，出站会断（实测）。
+    _job_log(job_id, "等待旧 IP 彻底释放...")
+    for _ in range(36):
+        _t.sleep(5)
+        try:
+            vnet.get_public_ip(cur_pub.id)
+        except Exception as e:  # noqa
+            if "404" in str(e):
+                break
     else:
-        _job_log(job_id, "实例已是关机状态")
-    _job_log(job_id, "正在开机（分配新 IP）...")
-    comp.instance_action(iid, "START")
-    _wait_state(comp, iid, "RUNNING", job_id)
-    import time as _t
-    _t.sleep(8)
-    new_pub, _ = _vnic_ips(comp, vnet, creds["tenancy"], iid)
-    _job_log(job_id, "新 IP: %s" % (new_pub or "获取中，请稍后刷新"))
-    _job_done(job_id, {"old_ip": old_pub, "new_ip": new_pub,
-                       "note": "如控制台显示不一致，请等待 1-2 分钟后重新扫描"})
+        raise RuntimeError("旧 IP 长时间未释放，请稍后重试")
+    _t.sleep(10)
+    _job_log(job_id, "已释放，正在分配新公网 IP...")
+    new_obj = vnet.create_public_ip(
+        oci.core.models.CreatePublicIpDetails(
+            compartment_id=primary.compartment_id,
+            lifetime="EPHEMERAL",
+            private_ip_id=primary.id,
+        )).data
+    new_pub = ""
+    for _ in range(24):
+        _t.sleep(5)
+        cur = vnet.get_public_ip(new_obj.id).data
+        new_pub = getattr(cur, "ip_address", "") or ""
+        if new_pub:
+            break
+    if not new_pub:
+        new_pub = vnet.get_vnic(vnic_id).data.public_ip or ""
+    if not new_pub:
+        raise RuntimeError("新 IP 已分配但未能读取，请在控制台确认；实例当前可能没有公网 IP")
+    _job_log(job_id, "旧 IP: %s -> 新 IP: %s" % (old_pub, new_pub))
+    if new_pub == old_pub:
+        _job_done(job_id, {"old_ip": old_pub, "new_ip": new_pub,
+                           "note": "分配到的 IP 与之前相同（地址池复用），可再次更换"})
+    else:
+        _job_done(job_id, {"old_ip": old_pub, "new_ip": new_pub,
+                           "note": "实例未重启，SSH 请改用新 IP 连接"})
 
 
 @app.route("/api/mgmt/jobs/<job_id>")
