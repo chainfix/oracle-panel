@@ -288,12 +288,9 @@ def create_task():
             f.write("%s=%s\n" % (k, shlex.quote(v)))
     os.chmod(os.path.join(oci_dir, "sniper.conf"), 0o600)
 
-    # 启动：把面板 venv 放进 PATH，让 snipe.sh 能找到同环境的 oci-cli
-    venv_bin = os.path.join(PANEL_DIR, "venv", "bin")
-    path_parts = [venv_bin, os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")]
-    env = {"PATH": os.pathsep.join(path_parts),
-           "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8",
-           "VIRTUAL_ENV": os.path.join(PANEL_DIR, "venv")}
+    # 启动
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+           "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8"}
     proc = subprocess.Popen(
         ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -434,9 +431,15 @@ def _oci_cfg(creds, region):
 
 def _job_log(job_id, msg):
     j = mgmt_jobs.get(job_id)
+    line = "[%s] %s" % (datetime.now().strftime("%H:%M:%S"), msg)
     if j:
-        j["lines"].append("[%s] %s" % (datetime.now().strftime("%H:%M:%S"), msg))
+        j["lines"].append(line)
         j["lines"] = j["lines"][-200:]
+    try:
+        with open("/tmp/oci-panel-jobs.log", "a") as f:
+            f.write("%s %s %s\n" % (datetime.now().strftime("%m-%d %H:%M:%S"), job_id, line))
+    except Exception:
+        pass
 
 
 def _job_done(job_id, result=None):
@@ -448,9 +451,15 @@ def _job_done(job_id, result=None):
 
 def _job_error(job_id, err):
     j = mgmt_jobs.get(job_id)
+    line = "✘ " + str(err)[:500]
     if j:
         j["status"] = "error"
-        j["lines"].append("✘ " + str(err)[:500])
+        j["lines"].append(line)
+    try:
+        with open("/tmp/oci-panel-jobs.log", "a") as f:
+            f.write("%s %s %s\n" % (datetime.now().strftime("%m-%d %H:%M:%S"), job_id, line))
+    except Exception:
+        pass
 
 
 def _start_job(fn, *args):
@@ -473,16 +482,23 @@ def _start_job(fn, *args):
 
 
 def _vnic_ips(comp, vnet, tenancy, iid):
-    """返回 (public_ip, private_ip)"""
-    pub = priv = ""
+    """返回 (public_ip, private_ip, ipv6)"""
+    pub = priv = v6 = ""
     try:
         atts = comp.list_vnic_attachments(tenancy, instance_id=iid).data
         if atts:
-            v = vnet.get_vnic(atts[0].vnic_id).data
+            vid = atts[0].vnic_id
+            v = vnet.get_vnic(vid).data
             pub, priv = v.public_ip or "", v.private_ip or ""
+            try:
+                ips = vnet.list_ipv6s(vnic_id=vid).data
+                if ips:
+                    v6 = ips[0].ip_address or ""
+            except Exception:  # noqa
+                pass
     except Exception:  # noqa
         pass
-    return pub, priv
+    return pub, priv, v6
 
 
 def _wait_state(comp, iid, want, job_id, timeout=600):
@@ -526,7 +542,7 @@ def mgmt_scan():
             for i in comp.list_instances(creds["tenancy"]).data:
                 if i.lifecycle_state in ("TERMINATED", "TERMINATING"):
                     continue
-                pub, priv = _vnic_ips(comp, vnet, creds["tenancy"], i.id)
+                pub, priv, ipv6 = _vnic_ips(comp, vnet, creds["tenancy"], i.id)
                 sc = i.shape_config
                 tc = i.time_created
                 items.append({
@@ -536,7 +552,7 @@ def mgmt_scan():
                     "memory": getattr(sc, "memory_in_gbs", None),
                     "state": i.lifecycle_state,
                     "ad": i.availability_domain,
-                    "public_ip": pub, "private_ip": priv,
+                    "public_ip": pub, "private_ip": priv, "ipv6": ipv6,
                     "created": tc.strftime("%Y-%m-%d %H:%M") if tc else "",
                 })
             if items:
@@ -649,6 +665,169 @@ def mgmt_change_ip():
     return jsonify({"job": _start_job(_do_change_ip, creds, region, iid)})
 
 
+@app.route("/api/mgmt/reboot", methods=["POST"])
+def mgmt_reboot():
+    data = request.get_json(force=True, silent=True) or {}
+    creds, err = _mgmt_creds(data)
+    if err:
+        return jsonify({"error": err}), 400
+    region = data.get("region", "")
+    iid = data.get("instance_id", "")
+    if region not in REGION_CODES or not iid.startswith("ocid1.instance."):
+        return jsonify({"error": "参数无效"}), 400
+    return jsonify({"job": _start_job(_do_reboot, creds, region, iid)})
+
+
+def _do_reboot(job_id, creds, region, iid):
+    """软重启实例（ACPI 关机再开机），等回到 RUNNING。"""
+    import oci
+    cfg = _oci_cfg(creds, region)
+    comp = oci.core.ComputeClient(cfg)
+    inst = comp.get_instance(iid).data
+    name = inst.display_name or iid[-12:]
+    _job_log(job_id, "实例: %s，正在软重启 ..." % name)
+    comp.instance_action(iid, "SOFTRESET")
+    _wait_state(comp, iid, "RUNNING", job_id)
+    _job_log(job_id, "已回到 RUNNING")
+    _job_done(job_id, {"note": "重启完成"})
+
+
+@app.route("/api/mgmt/ipv6", methods=["POST"])
+def mgmt_ipv6():
+    data = request.get_json(force=True, silent=True) or {}
+    creds, err = _mgmt_creds(data)
+    if err:
+        return jsonify({"error": err}), 400
+    region = data.get("region", "")
+    iid = data.get("instance_id", "")
+    if region not in REGION_CODES or not iid.startswith("ocid1.instance."):
+        return jsonify({"error": "参数无效"}), 400
+    return jsonify({"job": _start_job(_do_enable_ipv6, creds, region, iid)})
+
+
+def _do_enable_ipv6(job_id, creds, region, iid):
+    """给实例的 VNIC 分配 IPv6。步骤（幂等，缺啥补啥）：
+    VCN 加 IPv6 段 → 子网划 /64 → 路由表加 ::/0 → 安全列表放行 IPv6 → VNIC 分配地址。"""
+    import oci
+    import ipaddress
+    import time as _t
+    cfg = _oci_cfg(creds, region)
+    comp = oci.core.ComputeClient(cfg)
+    vnet = oci.core.VirtualNetworkClient(cfg)
+    inst = comp.get_instance(iid).data
+    name = inst.display_name or iid[-12:]
+    _job_log(job_id, "实例: %s" % name)
+
+    # 1. VNIC 与子网
+    atts = comp.list_vnic_attachments(creds["tenancy"], instance_id=iid).data
+    if not atts:
+        raise RuntimeError("找不到该实例的 VNIC")
+    vnic_id = atts[0].vnic_id
+    vnic = vnet.get_vnic(vnic_id).data
+    subnet = vnet.get_subnet(vnic.subnet_id).data
+    vcn = vnet.get_vcn(subnet.vcn_id).data
+    _job_log(job_id, "VNIC/子网/VCN 就绪")
+
+    # 2. VCN 加 IPv6 段（Oracle 分配 /56）
+    v6blocks = list(getattr(vcn, "ipv6_cidr_blocks", None) or [])
+    if not v6blocks:
+        _job_log(job_id, "VCN 未启用 IPv6，正在申请 Oracle 分配的 /56 ...")
+        vcn = vnet.add_ipv6_vcn_cidr(
+            subnet.vcn_id,
+            add_vcn_ipv6_cidr_details=oci.core.models.AddVcnIpv6CidrDetails(
+                is_oracle_gua_allocation_enabled=True)).data
+        v6blocks = list(getattr(vcn, "ipv6_cidr_blocks", None) or [])
+        if not v6blocks:
+            raise RuntimeError("VCN IPv6 段分配失败")
+        _job_log(job_id, "VCN IPv6 段: %s" % v6blocks[0])
+    else:
+        _job_log(job_id, "VCN 已有 IPv6 段: %s" % v6blocks[0])
+
+    # 3. 子网划 /64（取 /56 的第一个 /64）
+    s6blocks = list(getattr(subnet, "ipv6_cidr_blocks", None) or [])
+    if not s6blocks:
+        net56 = ipaddress.ip_network(v6blocks[0])
+        cidr64 = str(next(net56.subnets(new_prefix=64)))
+        _job_log(job_id, "子网未划 IPv6，正在分配 %s ..." % cidr64)
+        vnet.add_ipv6_subnet_cidr(
+            subnet.id,
+            oci.core.models.AddSubnetIpv6CidrDetails(
+                ipv6_cidr_block=cidr64))
+        subnet = vnet.get_subnet(subnet.id).data
+        _job_log(job_id, "子网 IPv6: %s" % cidr64)
+    else:
+        _job_log(job_id, "子网已有 IPv6: %s" % s6blocks[0])
+
+    # 4. 路由表加 ::/0（复用现有 0.0.0.0/0 的 IGW）
+    rt = vnet.get_route_table(subnet.route_table_id).data
+    rules = list(rt.route_rules or [])
+    has_v6 = any(getattr(r, "destination", "") == "::/0" for r in rules)
+    if not has_v6:
+        igw = ""
+        for r in rules:
+            if getattr(r, "destination", "") == "0.0.0.0/0":
+                igw = getattr(r, "network_entity_id", "")
+                break
+        if not igw:
+            raise RuntimeError("路由表没有 0.0.0.0/0 规则，找不到 Internet 网关")
+        rules.append(oci.core.models.RouteRule(
+            destination="::/0", network_entity_id=igw))
+        vnet.update_route_table(
+            rt.id,
+            oci.core.models.UpdateRouteTableDetails(route_rules=rules))
+        _job_log(job_id, "路由表已加 ::/0")
+    else:
+        _job_log(job_id, "路由表已有 ::/0")
+
+    # 5. 安全列表放行 IPv6 入站（与 IPv4 一致：全放开，端口由机器防火墙管）
+    for sl_id in (subnet.security_list_ids or []):
+        sl = vnet.get_security_list(sl_id).data
+        irules = list(sl.ingress_security_rules or [])
+        has_v6_in = any(":" in (getattr(r, "source", "") or "") for r in irules)
+        if not has_v6_in:
+            irules.append(oci.core.models.IngressSecurityRule(
+                source="::/0", protocol="all"))
+            vnet.update_security_list(
+                sl_id,
+                oci.core.models.UpdateSecurityListDetails(
+                    ingress_security_rules=irules))
+            _job_log(job_id, "安全列表已放行 IPv6 入站 (::/0)")
+        else:
+            _job_log(job_id, "安全列表已有 IPv6 入站规则")
+
+    # 6. VNIC 分配 IPv6 地址
+    exist = vnet.list_ipv6s(vnic_id=vnic_id).data
+    if exist:
+        ipv6 = exist[0].ip_address
+        _job_log(job_id, "VNIC 已有 IPv6: %s" % ipv6)
+    else:
+        _job_log(job_id, "正在给 VNIC 分配 IPv6 ...")
+        obj = vnet.create_ipv6(
+            oci.core.models.CreateIpv6Details(vnic_id=vnic_id)).data
+        ipv6 = ""
+        for _ in range(24):
+            _t.sleep(5)
+            cur = vnet.get_ipv6(obj.id).data
+            ipv6 = getattr(cur, "ip_address", "") or ""
+            if ipv6:
+                break
+        if not ipv6:
+            raise RuntimeError("IPv6 分配后未能读取，请在控制台确认")
+        _job_log(job_id, "已分配 IPv6: %s" % ipv6)
+    _job_done(job_id, {
+        "ipv6": ipv6,
+        "note": ("客机内一般会自动获取（SLAAC）；若无地址可尝试 dhclient -6。"
+                 "IPv6 防火墙需手动配，在机器上跑这一条：\n"
+                 "sudo ip6tables -F && sudo ip6tables -X && "
+                 "sudo ip6tables -P INPUT DROP && sudo ip6tables -P FORWARD DROP && "
+                 "sudo ip6tables -P OUTPUT ACCEPT && "
+                 "sudo ip6tables -A INPUT -i lo -j ACCEPT && "
+                 "sudo ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT && "
+                 "sudo ip6tables -A INPUT -p tcp --dport 61234 -j ACCEPT && "
+                 "sudo ip6tables -A INPUT -p icmpv6 -j ACCEPT && "
+                 "sudo netfilter-persistent save")})
+
+
 def _do_change_ip(job_id, creds, region, iid):
     import oci
     import time as _t
@@ -657,7 +836,7 @@ def _do_change_ip(job_id, creds, region, iid):
     vnet = oci.core.VirtualNetworkClient(cfg)
     inst = comp.get_instance(iid).data
     name = inst.display_name or iid[-12:]
-    old_pub, _ = _vnic_ips(comp, vnet, creds["tenancy"], iid)
+    old_pub, _, _ = _vnic_ips(comp, vnet, creds["tenancy"], iid)
     if not old_pub:
         _job_done(job_id, {"note": "该实例没有公网 IP，无需更换"})
         return
