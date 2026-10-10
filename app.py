@@ -526,12 +526,26 @@ def mgmt_scan():
     creds, err = _mgmt_creds(data)
     if err:
         return jsonify({"error": err}), 400
-    try:
-        ident = oci.identity.IdentityClient(_oci_cfg(creds, "us-phoenix-1"))
-        subs = ident.list_region_subscriptions(creds["tenancy"]).data
-        regions = [s.region_name for s in subs if getattr(s, "status", "") == "READY"]
-    except Exception as e:  # noqa
-        return jsonify({"error": "账号验证失败: " + str(e)[:200]}), 400
+    regions = []
+    last_err = None
+    # 家区域不固定，轮询常见区域直到身份认证通过
+    for _r in ("us-phoenix-1", "uk-london-1", "ap-tokyo-1", "ap-osaka-1",
+               "ap-seoul-1", "ap-singapore-1", "eu-frankfurt-1", "us-ashburn-1"):
+        try:
+            ident = oci.identity.IdentityClient(_oci_cfg(creds, _r))
+            subs = ident.list_region_subscriptions(creds["tenancy"]).data
+            regions = [s.region_name for s in subs if getattr(s, "status", "") == "READY"]
+            break
+        except Exception as e:  # noqa
+            last_err = e
+            continue
+    if not regions:
+        try:
+            with open("/tmp/oci-panel-jobs.log", "a") as _f:
+                _f.write("SCAN-ERR tenancy=%s err=%s\n" % (creds["tenancy"][-12:], str(last_err)[:300]))
+        except Exception:
+            pass
+        return jsonify({"error": "账号验证失败: " + str(last_err)[:200]}), 400
     out = []
     for r in regions:
         try:
