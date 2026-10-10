@@ -937,8 +937,43 @@ def index():
     return send_file(os.path.join(PANEL_DIR, "templates", "index.html"))
 
 
+def _resume_tasks():
+    """面板重启后，自动续跑被中断的抢机任务（snipe.sh 本身可断点续跑）。"""
+    import subprocess
+    c = db()
+    rows = c.execute("SELECT id, pid, stopped FROM tasks WHERE status='running'").fetchall()
+    for r in rows:
+        tid = r["id"]
+        d = task_dir(tid)
+        # 已抢到则标记成功
+        if os.path.exists(os.path.join(d, "oci-arm-instance.txt")):
+            c.execute("UPDATE tasks SET status='success' WHERE id=?", (tid,))
+            continue
+        if r["stopped"]:
+            continue
+        if pid_alive(r["pid"]):
+            continue
+        # 进程已死，重拉起来
+        venv_bin = os.path.join(PANEL_DIR, "venv", "bin")
+        env = {"PATH": os.pathsep.join([venv_bin, os.environ.get("PATH", "")]),
+               "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8",
+               "VIRTUAL_ENV": os.path.join(PANEL_DIR, "venv")}
+        try:
+            proc = subprocess.Popen(
+                ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, cwd=PANEL_DIR, env=env)
+            c.execute("UPDATE tasks SET pid=? WHERE id=?", (proc.pid, tid))
+            print("续跑抢机任务 %s (pid %d)" % (tid, proc.pid), flush=True)
+        except Exception as e:
+            print("续跑任务 %s 失败: %s" % (tid, e), flush=True)
+    c.commit()
+    c.close()
+
+
 if __name__ == "__main__":
     init_db()
+    _resume_tasks()
     _reaper()
     from waitress import serve
     port = int(CONF.get("port", 5887))
