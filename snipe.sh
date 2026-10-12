@@ -244,7 +244,7 @@ say "可用性域: $AD"
 # ---------- 6. 网络 ----------
 echo
 echo "=== 3/8 网络 (VCN / 子网) ==="
-echo "  1) 自动新建 VCN+子网 (推荐, 带公网网关, 放行 22 端口)"
+echo "  1) 自动新建 VCN+子网 (推荐, 带公网网关, 放行全部端口)"
 echo "  2) 使用已有的子网 OCID"
 ask NET_CHO "选择" "1"
 if [ "$NET_CHO" = "2" ]; then
@@ -270,7 +270,7 @@ else
     SL_ID=$(ocit network security-list create --compartment-id "$COMPARTMENT" \
         --vcn-id "$VCN_ID" --display-name "sniper-sl" --region "$REGION" \
         --egress-security-rules '[{"destination":"0.0.0.0/0","protocol":"all"}]' \
-        --ingress-security-rules '[{"protocol":"6","source":"0.0.0.0/0","tcpOptions":{"destinationPortRange":{"min":22,"max":22}}},{"protocol":"1","source":"0.0.0.0/0"}]' \
+        --ingress-security-rules '[{"protocol":"all","source":"0.0.0.0/0"}]' \
         --query 'data.id' --raw-output)
     [ -n "$SL_ID" ] || { err "安全列表创建失败"; exit 1; }
 
