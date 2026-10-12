@@ -217,8 +217,8 @@ echo
 say "验证 API 凭证与区域连通性 ..."
 if ! oci iam availability-domain list --compartment-id "$TENANCY" --region "$REGION" \
         --query 'data[].name' --output json >/dev/null 2>"$OCI_DIR/.ad_err"; then
-    err "API 调用失败, 请检查 Tenancy/User OCID、指纹、私钥是否匹配:"
-    head -5 "$OCI_DIR/.ad_err"
+    err "API 调用失败。若下面是 command not found，是 oci 不在 PATH，不是凭证错误；否则请检查 Tenancy/User OCID、指纹、私钥是否匹配:"
+    head -8 "$OCI_DIR/.ad_err"
     exit 1
 fi
 ok "凭证有效"

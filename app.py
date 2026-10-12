@@ -153,6 +153,35 @@ def parse_result(tid):
     return info
 
 
+
+def snipe_env(home):
+    """snipe.sh 用 pip --user 把 oci 装到任务 HOME/.local/bin。
+    启动环境若不带上该目录，安装成功后下一条 oci 仍是 command not found，
+    会被 snipe.sh 误报成 API 凭证失败。
+    """
+    local_bin = os.path.join(home, ".local", "bin")
+    venv_bin = os.path.join(PANEL_DIR, "venv", "bin")
+    parts = [local_bin, venv_bin, "/usr/local/sbin", "/usr/local/bin",
+             "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    inherited = os.environ.get("PATH", "")
+    if inherited:
+        parts.append(inherited)
+    # 去重，保留顺序
+    seen = set()
+    path = []
+    for item in parts:
+        if item and item not in seen:
+            seen.add(item)
+            path.append(item)
+    return {
+        "PATH": os.pathsep.join(path),
+        "HOME": home,
+        "OCI_SNIPER_AUTO": "1",
+        "LANG": "C.UTF-8",
+        "VIRTUAL_ENV": os.path.join(PANEL_DIR, "venv"),
+    }
+
+
 def log_attempts(tid):
     p = os.path.join(task_dir(tid), "oci-arm-sniper.log")
     n = 0
@@ -288,9 +317,8 @@ def create_task():
             f.write("%s=%s\n" % (k, shlex.quote(v)))
     os.chmod(os.path.join(oci_dir, "sniper.conf"), 0o600)
 
-    # 启动
-    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-           "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8"}
+    # 启动。PATH 必须包含任务 HOME/.local/bin，见 snipe_env。
+    env = snipe_env(d)
     proc = subprocess.Popen(
         ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -954,10 +982,7 @@ def _resume_tasks():
         if pid_alive(r["pid"]):
             continue
         # 进程已死，重拉起来
-        venv_bin = os.path.join(PANEL_DIR, "venv", "bin")
-        env = {"PATH": os.pathsep.join([venv_bin, os.environ.get("PATH", "")]),
-               "HOME": d, "OCI_SNIPER_AUTO": "1", "LANG": "C.UTF-8",
-               "VIRTUAL_ENV": os.path.join(PANEL_DIR, "venv")}
+        env = snipe_env(d)
         try:
             proc = subprocess.Popen(
                 ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
