@@ -774,11 +774,24 @@ def _do_enable_ipv6(job_id, creds, region, iid):
     v6blocks = list(getattr(vcn, "ipv6_cidr_blocks", None) or [])
     if not v6blocks:
         _job_log(job_id, "VCN 未启用 IPv6，正在申请 Oracle 分配的 /56 ...")
-        vcn = vnet.add_ipv6_vcn_cidr(
-            subnet.vcn_id,
-            add_vcn_ipv6_cidr_details=oci.core.models.AddVcnIpv6CidrDetails(
-                is_oracle_gua_allocation_enabled=True)).data
-        v6blocks = list(getattr(vcn, "ipv6_cidr_blocks", None) or [])
+        try:
+            vnet.add_ipv6_vcn_cidr(
+                subnet.vcn_id,
+                add_vcn_ipv6_cidr_details=oci.core.models.AddVcnIpv6CidrDetails(
+                    is_oracle_gua_allocation_enabled=True))
+        except oci.exceptions.ServiceError as e:
+            msg = (getattr(e, "message", "") or str(e)).lower()
+            # 上次请求已分配成功，但返回体没带上段；再申请会被拒。
+            if getattr(e, "status", None) != 400 or "already allocated" not in msg:
+                raise
+            _job_log(job_id, "VCN IPv6 段已存在，改为重新读取")
+        v6blocks = []
+        for _ in range(12):
+            vcn = vnet.get_vcn(subnet.vcn_id).data
+            v6blocks = list(getattr(vcn, "ipv6_cidr_blocks", None) or [])
+            if v6blocks:
+                break
+            _t.sleep(5)
         if not v6blocks:
             raise RuntimeError("VCN IPv6 段分配失败")
         _job_log(job_id, "VCN IPv6 段: %s" % v6blocks[0])
