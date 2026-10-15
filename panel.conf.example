@@ -2,7 +2,7 @@
 # 复制为 panel.conf 后修改
 port=5887
 
-# 面板登录密码的 SHA256（必填，否则无法登录）
+# 面板登录密码的 SHA256（不填则首次打开面板时在网页上设置）
 # 用 install.sh 部署会自动生成；手动部署时先生成一个：
 #   python3 -c "import secrets,hashlib; a='abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789'; pw=''.join(secrets.choice(a) for _ in range(20)); print('密码:', pw); print('panel_password_sha256='+hashlib.sha256(pw.encode()).hexdigest())"
 # panel_password_sha256=

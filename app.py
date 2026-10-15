@@ -101,6 +101,7 @@ app.secret_key = _ensure_session_secret()
 
 # ---------- 面板登录防护 ----------
 # 心跳接口（机器上报用）保持公开，其余全部要登录。
+# 首次部署未设置密码时，打开面板会先进入 /setup 设置强密码（一次性）。
 _login_failures = {}  # ip -> [失败时间戳]
 
 
@@ -111,10 +112,48 @@ def _login_blocked(ip):
     return len(ts) >= 5
 
 
+def _password_is_set():
+    return bool(CONF.get("panel_password_sha256", ""))
+
+
+def _write_password_hash(sha):
+    """把密码哈希写入 panel.conf（原子替换，只动 panel_password_sha256 这一行）"""
+    lines = []
+    if os.path.exists(CONF_FILE):
+        with open(CONF_FILE) as f:
+            lines = f.readlines()
+    out, found = [], False
+    for ln in lines:
+        if ln.strip().startswith("panel_password_sha256="):
+            if not found:
+                out.append("panel_password_sha256=%s\n" % sha)
+                found = True
+        else:
+            out.append(ln)
+    if not found:
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        out.append("panel_password_sha256=%s\n" % sha)
+    tmp = CONF_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(out)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONF_FILE)
+    CONF["panel_password_sha256"] = sha
+
+
 @app.before_request
 def _require_login():
     p = request.path
-    if p == "/login" or p == "/api/login" or p.startswith("/api/heartbeat"):
+    if p.startswith("/api/heartbeat"):
+        return
+    if not _password_is_set():
+        if p == "/setup" or p == "/api/setup":
+            return
+        if p.startswith("/api/"):
+            return jsonify({"error": "请先设置面板密码", "setup_required": True}), 401
+        return redirect("/setup")
+    if p == "/login" or p == "/api/login":
         return
     if session.get("authed"):
         return
@@ -123,8 +162,37 @@ def _require_login():
     return redirect("/login")
 
 
+@app.route("/setup")
+def setup_page():
+    if _password_is_set():
+        return redirect("/login")
+    return send_file(os.path.join(PANEL_DIR, "templates", "setup.html"))
+
+
+@app.route("/api/setup", methods=["POST"])
+def api_setup():
+    if _password_is_set():
+        return jsonify({"error": "密码已设置"}), 403
+    data = request.get_json(force=True, silent=True) or {}
+    pw = data.get("password", "")
+    pw2 = data.get("password2", "")
+    if len(pw) < 8:
+        return jsonify({"error": "密码至少 8 位"}), 400
+    if pw != pw2:
+        return jsonify({"error": "两次输入的密码不一致"}), 400
+    sha = hashlib.sha256(pw.encode("utf-8")).hexdigest()
+    try:
+        _write_password_hash(sha)
+    except OSError as e:
+        return jsonify({"error": "写入配置失败: %s" % e}), 500
+    session["authed"] = True
+    return jsonify({"ok": True})
+
+
 @app.route("/login")
 def login_page():
+    if not _password_is_set():
+        return redirect("/setup")
     return send_file(os.path.join(PANEL_DIR, "templates", "login.html"))
 
 

@@ -58,6 +58,7 @@ fi
 install -m 644 "$SRC_DIR/app.py" "$PANEL_DIR/app.py"
 install -m 644 "$SRC_DIR/templates/index.html" "$PANEL_DIR/templates/index.html"
 install -m 644 "$SRC_DIR/templates/login.html" "$PANEL_DIR/templates/login.html"
+install -m 644 "$SRC_DIR/templates/setup.html" "$PANEL_DIR/templates/setup.html"
 install -m 755 "$SRC_DIR/snipe.sh" "$PANEL_DIR/snipe.sh"
 install -m 644 "$SRC_DIR/requirements.txt" "$PANEL_DIR/requirements.txt"
 install -m 644 "$SRC_DIR/panel.conf.example" "$PANEL_DIR/panel.conf.example"
@@ -84,26 +85,25 @@ test -x "$PANEL_DIR/venv/bin/oci"
 
 umask 077
 # ---- 面板登录密码 ----
-# 重装时沿用已有密码；想指定密码用 PANEL_PASSWORD 环境变量；否则随机生成并打印
+# 首次打开面板时在网页上设置强密码；批量部署可用 PANEL_PASSWORD 环境变量预设；重装沿用已有密码
 EXIST_HASH="$(grep -E '^panel_password_sha256=' "$PANEL_DIR/panel.conf" 2>/dev/null | cut -d= -f2- || true)"
+PW_LINE="# 首次打开面板时按提示设置登录密码；也可在这里填入密码的 SHA256"
 if [[ -n "${PANEL_PASSWORD:-}" ]]; then
-    PANEL_PW="$PANEL_PASSWORD"
+    PANEL_HASH="$(PANEL_PW="$PANEL_PASSWORD" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["PANEL_PW"].encode()).hexdigest())')"
+    PW_LINE="panel_password_sha256=$PANEL_HASH"
+    PW_MSG="已用 PANEL_PASSWORD 预设面板登录密码"
 elif [[ -n "$EXIST_HASH" ]]; then
-    PANEL_PW="(沿用已有密码)"
+    PW_LINE="panel_password_sha256=$EXIST_HASH"
+    PW_MSG="沿用已有面板登录密码"
 else
-    PANEL_PW="$(python3 -c 'import secrets; a="abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"; print("".join(secrets.choice(a) for _ in range(20)))')"
-fi
-if [[ "$PANEL_PW" != "(沿用已有密码)" ]]; then
-    PANEL_HASH="$(PANEL_PW="$PANEL_PW" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["PANEL_PW"].encode()).hexdigest())')"
-else
-    PANEL_HASH="$EXIST_HASH"
+    PW_MSG="首次打开面板时按提示设置登录密码"
 fi
 cat > "$PANEL_DIR/panel.conf" <<EOF
 # OCI 抢机面板配置
 port=$PORT
-# 面板登录密码的 SHA256（必填，否则无法登录）
+# 面板登录密码的 SHA256
 # 改密码：PANEL_PASSWORD=新密码 sudo -E ./install.sh，或手动改这一行后 systemctl restart oci-panel
-panel_password_sha256=$PANEL_HASH
+$PW_LINE
 EOF
 chmod 600 "$PANEL_DIR/panel.conf"
 chown -R "$RUN_USER:$RUN_USER" "$PANEL_DIR"
@@ -149,7 +149,6 @@ if [[ "$code" != "302" || "$login_code" != "200" ]]; then
     exit 1
 fi
 echo "部署完成: http://<服务器IP>:${PORT}/"
-echo "面板登录密码: ${PANEL_PW}"
-echo "（密码只显示这一次，请收好发给使用者；改密码：PANEL_PASSWORD=新密码 sudo -E ./install.sh）"
+echo "${PW_MSG}"
 echo "当前以用户 ${RUN_USER} 运行。"
 echo "Python ${PYVER} / oci-cli: $("$PANEL_DIR/venv/bin/oci" --version 2>/dev/null | head -1)"

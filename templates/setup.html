@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>设置密码 - OCI 抢机面板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1420;color:#e6ebf4;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#182032;border:1px solid #26314a;border-radius:12px;padding:28px;width:320px}
+h1{font-size:18px;margin-bottom:6px;text-align:center}
+.sub{font-size:13px;color:#8b96ad;text-align:center;margin-bottom:14px}
+input{width:100%;background:#0f1626;border:1px solid #2b3652;color:#e6ebf4;border-radius:8px;padding:10px 12px;font-size:15px;margin-top:10px}
+.btn{display:inline-block;background:#2f6fed;border:none;color:#fff;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer;width:100%;margin-top:14px}
+.btn:disabled{background:#3a4763;cursor:not-allowed}
+.err{color:#ff7b7b;font-size:13px;margin-top:10px;min-height:18px;text-align:center}
+.strength{font-size:13px;margin-top:8px;text-align:center;min-height:18px}
+.s1{color:#ff7b7b}.s2{color:#ffb84d}.s3{color:#7be38b}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔒 首次使用</h1>
+  <div class="sub">请设置面板登录密码（至少 8 位）</div>
+  <input id="pw1" type="password" placeholder="设置密码" autocomplete="new-password" oninput="check()">
+  <input id="pw2" type="password" placeholder="再次输入密码" autocomplete="new-password" oninput="check()">
+  <div class="strength" id="st"></div>
+  <button class="btn" id="btn" onclick="doSetup()" disabled>设置并进入</button>
+  <div class="err" id="err"></div>
+</div>
+<script>
+function score(pw){
+  let s=0;
+  if(pw.length>=8)s++; if(pw.length>=12)s++;
+  if(/[a-z]/.test(pw)&&/[A-Z]/.test(pw))s++;
+  if(/\d/.test(pw))s++;
+  if(/[^a-zA-Z0-9]/.test(pw))s++;
+  return s;
+}
+function check(){
+  const a=document.getElementById('pw1').value,b=document.getElementById('pw2').value;
+  const st=document.getElementById('st'),btn=document.getElementById('btn');
+  document.getElementById('err').textContent='';
+  if(a.length<8){st.textContent=a?'密码太短（至少 8 位）':'';st.className='strength s1';btn.disabled=true;return;}
+  const s=score(a);
+  if(s<=2){st.textContent='强度：弱';st.className='strength s1';}
+  else if(s<=3){st.textContent='强度：中';st.className='strength s2';}
+  else{st.textContent='强度：强';st.className='strength s3';}
+  btn.disabled=!(b&&a===b);
+  if(b&&a!==b){st.textContent='两次输入不一致';st.className='strength s1';}
+}
+document.getElementById('pw2').addEventListener('keydown',e=>{if(e.key==='Enter'&&!document.getElementById('btn').disabled)doSetup();});
+async function doSetup(){
+  const a=document.getElementById('pw1').value,b=document.getElementById('pw2').value;
+  const err=document.getElementById('err');
+  err.textContent='';
+  try{
+    const r=await fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:a,password2:b})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.error||('设置失败 '+r.status));
+    location.href='/';
+  }catch(e){err.textContent=e.message;}
+}
+</script>
+</body>
+</html>

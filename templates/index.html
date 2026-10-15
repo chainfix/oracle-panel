@@ -233,7 +233,7 @@ async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',
     headers:{'Content-Type':'application/json'},
     body:body?JSON.stringify(body):undefined});
-  if(r.status===401){location.href='/login';throw 0;}
+  if(r.status===401){const j=await r.json().catch(()=>({}));location.href=j.setup_required?'/setup':'/login';throw 0;}
   const j=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(j.error||('请求失败 '+r.status));
   return j;
