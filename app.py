@@ -2,6 +2,8 @@
 """OCI ARM 抢机面板 - 后端
 每个任务在独立 HOME 目录下以 OCI_SNIPER_AUTO=1 运行 snipe.sh。
 """
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -14,7 +16,7 @@ import subprocess
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, redirect, request, send_file, session
 
 PANEL_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_DIR = os.path.join(PANEL_DIR, "tasks")
@@ -63,6 +65,8 @@ RE_TID = re.compile(r"^[0-9a-f]{8}$")  # create_task 用 secrets.token_hex(4) �
 app = Flask(__name__)
 
 
+
+
 def load_conf():
     conf = {}
     if os.path.exists(CONF_FILE):
@@ -76,6 +80,77 @@ def load_conf():
 
 
 CONF = load_conf()
+
+def _ensure_session_secret():
+    """session 签名密钥：panel.conf 里没有就生成一个写回去，重启不掉登录"""
+    sec = CONF.get("session_secret", "")
+    if not sec:
+        sec = secrets.token_hex(32)
+        try:
+            with open(CONF_FILE, "a") as f:
+                f.write("\n# 面板登录 session 签名密钥（自动生成，勿删，删除后所有人需重新登录）\n")
+                f.write("session_secret=%s\n" % sec)
+            os.chmod(CONF_FILE, 0o600)
+        except OSError:
+            pass
+        CONF["session_secret"] = sec
+    return sec
+
+
+app.secret_key = _ensure_session_secret()
+
+# ---------- 面板登录防护 ----------
+# 心跳接口（机器上报用）保持公开，其余全部要登录。
+_login_failures = {}  # ip -> [失败时间戳]
+
+
+def _login_blocked(ip):
+    now = time.time()
+    ts = [t for t in _login_failures.get(ip, []) if now - t < 900]
+    _login_failures[ip] = ts
+    return len(ts) >= 5
+
+
+@app.before_request
+def _require_login():
+    p = request.path
+    if p == "/login" or p == "/api/login" or p.startswith("/api/heartbeat"):
+        return
+    if session.get("authed"):
+        return
+    if p.startswith("/api/"):
+        return jsonify({"error": "未登录"}), 401
+    return redirect("/login")
+
+
+@app.route("/login")
+def login_page():
+    return send_file(os.path.join(PANEL_DIR, "templates", "login.html"))
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    ip = request.remote_addr or "?"
+    if _login_blocked(ip):
+        return jsonify({"error": "尝试次数过多，请 15 分钟后再试"}), 429
+    data = request.get_json(force=True, silent=True) or {}
+    pw = data.get("password", "")
+    expect = CONF.get("panel_password_sha256", "")
+    ok = bool(expect) and hmac.compare_digest(
+        hashlib.sha256(pw.encode("utf-8")).hexdigest(), expect)
+    if not ok:
+        _login_failures.setdefault(ip, []).append(time.time())
+        time.sleep(1)  # 拖慢爆破
+        return jsonify({"error": "密码错误"}), 403
+    _login_failures.pop(ip, None)
+    session["authed"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.pop("authed", None)
+    return jsonify({"ok": True})
 
 
 def db():

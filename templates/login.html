@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>登录 - OCI 抢机面板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1420;color:#e6ebf4;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#182032;border:1px solid #26314a;border-radius:12px;padding:28px;width:320px}
+h1{font-size:18px;margin-bottom:16px;text-align:center}
+input{width:100%;background:#0f1626;border:1px solid #2b3652;color:#e6ebf4;border-radius:8px;padding:10px 12px;font-size:15px;margin-top:6px}
+.btn{display:inline-block;background:#2f6fed;border:none;color:#fff;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer;width:100%;margin-top:14px}
+.err{color:#ff7b7b;font-size:13px;margin-top:10px;min-height:18px;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔒 OCI 抢机面板</h1>
+  <input id="pw" type="password" placeholder="输入面板密码" autocomplete="current-password">
+  <button class="btn" onclick="doLogin()">登录</button>
+  <div class="err" id="err"></div>
+</div>
+<script>
+document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+async function doLogin(){
+  const pw=document.getElementById('pw').value,err=document.getElementById('err');
+  err.textContent='';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.error||('登录失败 '+r.status));
+    location.href='/';
+  }catch(e){err.textContent=e.message;}
+}
+</script>
+</body>
+</html>

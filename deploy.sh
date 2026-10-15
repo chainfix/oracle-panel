@@ -24,7 +24,7 @@ scp \
     "$SRC_DIR/install.sh" \
     "$SRC_DIR/deploy.sh" \
     "$REMOTE:$PANEL_DIR/"
-scp "$SRC_DIR/templates/index.html" "$REMOTE:$PANEL_DIR/templates/"
+scp "$SRC_DIR/templates/index.html" "$SRC_DIR/templates/login.html" "$REMOTE:$PANEL_DIR/templates/"
 ssh "$REMOTE" "chmod +x $PANEL_DIR/install.sh $PANEL_DIR/deploy.sh $PANEL_DIR/snipe.sh"
 
 echo "=== 2. 远端执行 install.sh ==="

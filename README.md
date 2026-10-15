@@ -46,9 +46,12 @@ sudo ./install.sh 5887
 - 安装 `python3` / `venv` / `pip` / `curl` / `git`
 - 把文件放到 `/opt/oci-panel`
 - 在 venv 里安装面板依赖和 `oci-cli`
+- 生成面板登录密码（显示在安装输出末尾，请收好）
 - 用系统用户 `oci-panel` 启动 `oci-panel.service`
 
-部署后访问 `http://你的服务器IP:5887/`。
+部署后访问 `http://你的服务器IP:5887/`，输入安装时生成的面板密码登录。
+想自己指定密码：`PANEL_PASSWORD=你的密码 sudo -E ./install.sh`
+改密码：`PANEL_PASSWORD=新密码 sudo -E ./install.sh` 后重装（会沿用已有任务），或直接改 `/opt/oci-panel/panel.conf` 里的 `panel_password_sha256` 后 `systemctl restart oci-panel`。
 
 ### 方式二：从本机推送到服务器
 
@@ -79,7 +82,8 @@ python3 -m venv venv
 
 ## 安全说明
 
-- 面板本身无登录鉴权，适合内网 / 可信网络使用，公网部署请自行加反向代理鉴权
+- 面板有统一登录密码保护：未登录访问首页跳转登录页，未登录调 API 返回 401；单 IP 连续输错 5 次锁定 15 分钟
+- 密码以 SHA256 存于 `/opt/oci-panel/panel.conf`（权限 600）；心跳上报接口（`/api/heartbeat*`）保持公开，机器上报不受影响
 - API 凭证缓存在各用户浏览器 localStorage；创建任务后会写入服务器该任务的独立目录（权限 600），删除任务时一并清除
 - 机器管理的账号凭证仅在内存中使用，不落盘
 - systemd 安装以 `oci-panel` 用户运行，不再默认用 root 跑面板

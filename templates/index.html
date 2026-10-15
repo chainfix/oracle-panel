@@ -60,6 +60,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     <div class="row">
       <button class="btn small" id="tabTaskBtn" onclick="showTab('task')">抢机任务</button>
       <button class="btn ghost small" id="tabMgmtBtn" onclick="showTab('mgmt')">机器管理</button>
+      <button class="btn ghost small" onclick="logout()" title="退出登录">退出</button>
     </div>
   </div>
   <div id="taskView">
@@ -223,12 +224,16 @@ function clearApiCache(){
   document.getElementById('f_key').value='';
   alert('已清除本浏览器保存的 API 信息');
 }
+async function logout(){
+  try{await api('/api/logout','POST');}catch(e){}
+  location.href='/login';
+}
 
 async function api(path,method,body){
   const r=await fetch(path,{method:method||'GET',
     headers:{'Content-Type':'application/json'},
     body:body?JSON.stringify(body):undefined});
-  if(r.status===401){location.reload();throw 0;}
+  if(r.status===401){location.href='/login';throw 0;}
   const j=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(j.error||('请求失败 '+r.status));
   return j;

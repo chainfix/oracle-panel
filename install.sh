@@ -57,6 +57,7 @@ if [[ "$need_clone" -eq 1 ]]; then
 fi
 install -m 644 "$SRC_DIR/app.py" "$PANEL_DIR/app.py"
 install -m 644 "$SRC_DIR/templates/index.html" "$PANEL_DIR/templates/index.html"
+install -m 644 "$SRC_DIR/templates/login.html" "$PANEL_DIR/templates/login.html"
 install -m 755 "$SRC_DIR/snipe.sh" "$PANEL_DIR/snipe.sh"
 install -m 644 "$SRC_DIR/requirements.txt" "$PANEL_DIR/requirements.txt"
 install -m 644 "$SRC_DIR/panel.conf.example" "$PANEL_DIR/panel.conf.example"
@@ -82,9 +83,27 @@ fi
 test -x "$PANEL_DIR/venv/bin/oci"
 
 umask 077
+# ---- 面板登录密码 ----
+# 重装时沿用已有密码；想指定密码用 PANEL_PASSWORD 环境变量；否则随机生成并打印
+EXIST_HASH="$(grep -E '^panel_password_sha256=' "$PANEL_DIR/panel.conf" 2>/dev/null | cut -d= -f2- || true)"
+if [[ -n "${PANEL_PASSWORD:-}" ]]; then
+    PANEL_PW="$PANEL_PASSWORD"
+elif [[ -n "$EXIST_HASH" ]]; then
+    PANEL_PW="(沿用已有密码)"
+else
+    PANEL_PW="$(python3 -c 'import secrets; a="abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"; print("".join(secrets.choice(a) for _ in range(20)))')"
+fi
+if [[ "$PANEL_PW" != "(沿用已有密码)" ]]; then
+    PANEL_HASH="$(PANEL_PW="$PANEL_PW" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["PANEL_PW"].encode()).hexdigest())')"
+else
+    PANEL_HASH="$EXIST_HASH"
+fi
 cat > "$PANEL_DIR/panel.conf" <<EOF
 # OCI 抢机面板配置
 port=$PORT
+# 面板登录密码的 SHA256（必填，否则无法登录）
+# 改密码：PANEL_PASSWORD=新密码 sudo -E ./install.sh，或手动改这一行后 systemctl restart oci-panel
+panel_password_sha256=$PANEL_HASH
 EOF
 chmod 600 "$PANEL_DIR/panel.conf"
 chown -R "$RUN_USER:$RUN_USER" "$PANEL_DIR"
@@ -121,12 +140,16 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     journalctl -u "$SERVICE" -n 40 --no-pager >&2 || true
     exit 1
 fi
+# 未登录时首页 302 跳转到 /login 即为正常
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${PORT}/" || true)"
-if [[ "$code" != "200" ]]; then
-    echo "本机 HTTP 状态异常: ${code:-无响应}" >&2
+login_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:${PORT}/login" || true)"
+if [[ "$code" != "302" || "$login_code" != "200" ]]; then
+    echo "本机 HTTP 状态异常: /=${code:-无响应} /login=${login_code:-无响应}" >&2
     journalctl -u "$SERVICE" -n 40 --no-pager >&2 || true
     exit 1
 fi
 echo "部署完成: http://<服务器IP>:${PORT}/"
-echo "面板无登录鉴权，公网请加反向代理鉴权；当前以用户 ${RUN_USER} 运行。"
+echo "面板登录密码: ${PANEL_PW}"
+echo "（密码只显示这一次，请收好发给使用者；改密码：PANEL_PASSWORD=新密码 sudo -E ./install.sh）"
+echo "当前以用户 ${RUN_USER} 运行。"
 echo "Python ${PYVER} / oci-cli: $("$PANEL_DIR/venv/bin/oci" --version 2>/dev/null | head -1)"
