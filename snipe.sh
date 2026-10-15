@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Oracle Cloud 免费 ARM (Ampere A1 Flex) 自动抢机脚本 —— 交互式
+# Oracle Cloud 免费实例自动抢机脚本 —— 交互式
 #
-# 原理: 免费 ARM 配额常年"无容量", 脚本循环调用创建实例 API, 抢到为止。
-# 免费额度: VM.Standard.A1.Flex 最多 4 OCPU / 24GB 内存, 启动卷合计 200GB。
+# 原理: 免费配额常年"无容量", 脚本循环调用创建实例 API, 抢到为止。
+# 支持两种形状 (由 SHAPE 环境变量 / sniper.conf 决定):
+#   VM.Standard.A1.Flex      (ARM Ampere, 免费额度内 ≤2 OCPU / ≤12GB)
+#   VM.Standard.E2.1.Micro   (AMD 免费, 固定 1/8 OCPU / 1GB, 每租户最多 2 台,
+#                             只能在家区域创建, 且每个区域只有一个可用性域支持)
 #
 # 用法:
 #   ./snipe.sh            # 交互式, 按提示填 OCI 凭证与配置
 #   OCI_SNIPER_AUTO=1 ./snipe.sh   # 非交互(用已保存配置 + 环境变量覆盖)
+#   SHAPE=VM.Standard.E2.1.Micro OCI_SNIPER_AUTO=1 ./snipe.sh  # AMD 免费开机模式
 #
 # 配置保存在 ~/.oci/sniper.conf, 下次运行直接回车沿用上次的值。
 # 建议在 tmux 里跑, 断开 SSH 也继续:  tmux new -s oci  →  ./snipe.sh
@@ -20,7 +24,10 @@ OCI_CONFIG="$OCI_DIR/config"
 CONF="$OCI_DIR/sniper.conf"
 LOG="$HOME/oci-arm-sniper.log"
 SUMMARY="$HOME/oci-arm-instance.txt"
-SHAPE="VM.Standard.A1.Flex"
+# 形状可被环境变量或 sniper.conf 覆盖 (面板创建 AMD 任务时会写入);
+# AMD 模式的最终判定在配置载入后进行 (见"2. 读取上次配置")
+SHAPE="${SHAPE:-VM.Standard.A1.Flex}"
+IS_AMD=0
 
 say()  { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 ok()   { echo -e "[$(date '+%F %T')] \033[32m✔ $*\033[0m" | tee -a "$LOG"; }
@@ -35,7 +42,7 @@ save_conf() {
         echo "# 更新于 $(date '+%F %T')"
         for v in TENANCY USER_OCID FINGERPRINT REGION KEY_FILE COMPARTMENT AD SUBNET \
                  IMAGE NAME OCPUS MEM BOOT_GB PUBKEY INTERVAL MAX_ATTEMPTS SPEC_CHO \
-                 SSH_PASSWORD SSH_USER AD_CHO NET_CHO OS_CHO; do
+                 SSH_PASSWORD SSH_USER AD_CHO NET_CHO OS_CHO SHAPE KIND ROTATE_AD; do
             eval "val=\${$v:-}"
             [ -n "$val" ] && printf '%s=%q\n' "$v" "$val"
         done
@@ -124,6 +131,14 @@ if [ -f "$CONF" ]; then
     # shellcheck disable=SC1090
     source "$CONF"
     say "已载入上次配置 $CONF (直接回车即沿用)"
+fi
+# SHAPE 可能来自 sniper.conf, 在此统一判定 AMD 模式
+IS_AMD=0
+[ "${SHAPE:-VM.Standard.A1.Flex}" = "VM.Standard.E2.1.Micro" ] && IS_AMD=1
+if [ "$IS_AMD" = "1" ]; then
+    say "AMD 免费开机模式 (形状: $SHAPE, 固定 1/8 OCPU / 1GB 内存)"
+else
+    say "ARM 抢机模式 (形状: ${SHAPE:-VM.Standard.A1.Flex})"
 fi
 
 # 已有 oci config 则用它的值做默认值, 凭证不用重复输入
@@ -288,7 +303,11 @@ if [ -n "${IMAGE:-}" ]; then
     say "镜像: $IMAGE (配置指定，跳过选择)"
 else
 echo
+if [ "$IS_AMD" = "1" ]; then
+echo "=== 4/8 系统镜像 (x86_64, 兼容 $SHAPE) ==="
+else
 echo "=== 4/8 系统镜像 (ARM) ==="
+fi
 echo "  1) Oracle Linux (默认)"
 echo "  2) Canonical Ubuntu"
 echo "  3) 全部列出"
@@ -329,6 +348,11 @@ fi # IMAGE 未指定时才走交互选择
 
 # ---------- 8. 实例规格 ----------
 echo
+if [ "$IS_AMD" = "1" ]; then
+echo "=== 5/8 实例规格 (AMD 免费: 固定 1/8 OCPU / 1GB 内存) ==="
+ask NAME "实例显示名" "oci-amd-1"
+say "规格: 1/8 OCPU / 1GB 内存 (VM.Standard.E2.1.Micro 固定规格, 不可调)"
+else
 echo "=== 5/8 实例规格 (免费额度内: ≤4 OCPU, ≤24GB 内存) ==="
 ask NAME "实例显示名" "oci-arm-1"
 echo "实例规格 (免费额度内: 总计 ≤4 OCPU / ≤24GB 内存):"
@@ -354,6 +378,7 @@ case "$SPEC_CHO" in
 esac
 say "规格: ${OCPUS} OCPU / ${MEM}GB 内存"
 fi
+fi # IS_AMD
 ask BOOT_GB "启动卷 GB (50-200)" "50"
 
 # ---------- SSH 登录方式: 密钥 (默认) 或密码 ----------
@@ -377,13 +402,22 @@ else
 PUBKEY="${PUBKEY:-$HOME/.ssh/id_rsa.pub}"
 if [ ! -f "$PUBKEY" ]; then
     warn "未找到 SSH 公钥 $PUBKEY, 自动生成一对 ..."
+    mkdir -p "$(dirname "$PUBKEY")"
     ssh-keygen -t ed25519 -f "${PUBKEY%.pub}" -N "" -q \
         || { err "密钥生成失败"; exit 1; }
 fi
 ok "SSH 公钥: $PUBKEY"
 SSH_ARGS=(--ssh-authorized-keys-file "$PUBKEY")
 fi
-SHAPE_JSON=$(printf '{"ocpus":%d,"memoryInGBs":%d}' "$OCPUS" "$MEM")
+# 固定形状 (如 VM.Standard.E2.1.Micro) 不接受 --shape-config, 传了会报 400;
+# Flex 形状才需要传 ocpus/memoryInGBs
+SHAPE_ARGS=()
+if [ "$IS_AMD" = "1" ]; then
+    say "形状 $SHAPE 为固定规格, 启动时不传 shape-config"
+else
+    SHAPE_JSON=$(printf '{"ocpus":%d,"memoryInGBs":%d}' "$OCPUS" "$MEM")
+    SHAPE_ARGS=(--shape-config "$SHAPE_JSON")
+fi
 
 # ---------- 9. 重试策略 ----------
 echo
@@ -399,7 +433,11 @@ echo "================ 抢机配置汇总 ================"
 echo "区域:       $REGION"
 echo "可用性域:   $AD"
 echo "实例名:     $NAME"
+if [ "$IS_AMD" = "1" ]; then
+echo "规格:       AMD 免费 (1/8 OCPU / 1GB 内存) / ${BOOT_GB}GB 启动卷"
+else
 echo "规格:       ${OCPUS} OCPU / ${MEM}GB 内存 / ${BOOT_GB}GB 启动卷"
+fi
 echo "镜像:       $IMAGE"
 echo "子网:       $SUBNET"
 echo "重试间隔:   ${INTERVAL}s   最大尝试: $([ "$MAX_ATTEMPTS" = "0" ] && echo 无限 || echo "$MAX_ATTEMPTS")"
@@ -422,7 +460,13 @@ while true; do
         exit 1
     fi
     elapsed=$(( $(date +%s) - start_ts ))
-    say "第 $attempt 次尝试 (已运行 $((elapsed/60)) 分钟)..."
+    # AMD 免费形状每个区域只有一个 AD 支持, 逐个 AD 轮询 (子网是区域级的, 可复用)
+    if [ "${ROTATE_AD:-0}" = "1" ] && [ "${#ADS[@]}" -gt 1 ]; then
+        AD="${ADS[$(( (attempt-1) % ${#ADS[@]} ))]}"
+        say "第 $attempt 次尝试 (AD: $AD, 已运行 $((elapsed/60)) 分钟)..."
+    else
+        say "第 $attempt 次尝试 (已运行 $((elapsed/60)) 分钟)..."
+    fi
 
     out=$(mktemp)
     if oci compute instance launch \
@@ -430,7 +474,7 @@ while true; do
             --availability-domain "$AD" \
             --compartment-id "$COMPARTMENT" \
             --shape "$SHAPE" \
-            --shape-config "$SHAPE_JSON" \
+            "${SHAPE_ARGS[@]}" \
             --subnet-id "$SUBNET" \
             --image-id "$IMAGE" \
             --display-name "$NAME" \

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>OCI ARM 抢机面板</title>
+<title>OCI 抢机面板</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0f1420;color:#e6ebf4;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-size:15px;min-height:100vh}
@@ -63,14 +63,19 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     </div>
   </div>
   <div id="taskView">
-  <button class="btn" onclick="showNew()">＋ 新建抢机任务</button>
+  <div class="row">
+    <button class="btn" onclick="showNew('arm')">＋ ARM 抢机</button>
+    <button class="btn ghost" onclick="showNew('amd')">＋ AMD 免费开机</button>
+  </div>
   <div style="height:12px"></div>
   <div id="taskList"></div>
 
   <!-- 新建任务 -->
   <div id="newForm" class="card hide">
-    <h1 style="font-size:17px">新建任务</h1>
-    <div class="hint">API 凭证获取：OCI 控制台 → 右上角人像 → <b>API 密钥</b> → 添加 API 密钥，下载私钥。<br>填写一次后会自动保存在<b>本浏览器本地</b>，下次直接沿用（只有点"开始抢机"时才会发送到服务器）。<br><a href="javascript:void(0)" onclick="clearApiCache()" style="font-size:13px">清除本浏览器保存的 API 信息</a></div>
+    <h1 style="font-size:17px" id="newTitle">新建 ARM 抢机任务</h1>
+    <input type="hidden" id="f_kind" value="arm">
+    <div class="hint" id="amdHint" style="display:none">AMD 免费开机：形状 <b>VM.Standard.E2.1.Micro</b>（1/8 OCPU / 1GB 内存，固定规格，每账号最多 2 台）。<br>注意：① 必须在账号的<b>家区域</b>创建，其他区域会失败；② 每个区域只有一个可用性域支持该形状，任务会自动逐个 AD 轮询；③ 闲置 7 天（CPU/网络/内存使用率持续低于 20%）可能被甲骨文回收。</div>
+    <div class="hint">API 凭证获取：OCI 控制台 → 右上角人像 → <b>API 密钥</b> → 添加 API 密钥，下载私钥。<br>填写一次后会自动保存在<b>本浏览器本地</b>，下次直接沿用（只有点"开始"按钮时才会发送到服务器）。<br><a href="javascript:void(0)" onclick="clearApiCache()" style="font-size:13px">清除本浏览器保存的 API 信息</a></div>
     <label>Tenancy OCID</label><input id="f_tenancy" placeholder="ocid1.tenancy.oc1..">
     <label>User OCID</label><input id="f_user" placeholder="ocid1.user.oc1..">
     <label>API 密钥指纹</label><input id="f_fp" placeholder="aa:bb:cc:…（16 组）">
@@ -83,10 +88,16 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     </div>
     <textarea id="f_key" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
     <label>目标区域（甲骨文全部可开区域）</label><select id="f_region"></select>
+    <div id="specRow">
     <label>实例规格（免费额度内：总计 ≤4 OCPU / ≤24GB 内存）</label>
     <div class="row">
       <div style="flex:1;min-width:120px"><label style="margin-top:0">OCPU（1-4）</label><input id="f_ocpu" type="number" value="4" min="1" max="4"></div>
       <div style="flex:1;min-width:120px"><label style="margin-top:0">内存 GB（1-24）</label><input id="f_mem" type="number" value="24" min="1" max="24"></div>
+    </div>
+    </div>
+    <div id="amdSpecRow" style="display:none">
+      <label>实例规格</label>
+      <div class="hint" style="margin-top:6px">固定规格：<b>1/8 OCPU / 1GB 内存</b>（VM.Standard.E2.1.Micro，不可调）</div>
     </div>
     <label>系统镜像（细分版本，实时从甲骨文获取）</label>
     <div class="row">
@@ -119,7 +130,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     </div>
     <div id="newErr" class="err hide"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" onclick="createTask()">开始抢机</button>
+      <button class="btn" id="createBtn" onclick="createTask()">开始 ARM 抢机</button>
       <button class="btn ghost" onclick="hideNew()">取消</button>
     </div>
   </div>
@@ -143,7 +154,16 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
       <div class="row">
         <select id="m_account" style="flex:1;margin-top:0"></select>
         <button class="btn ghost small" onclick="document.getElementById('acctForm').classList.toggle('hide')">＋ 添加</button>
+        <button class="btn ghost small" onclick="toggleTaskImport()">📥 从任务导入</button>
         <button class="btn ghost small" onclick="delAccount()">删除</button>
+      </div>
+      <div id="taskImportBox" class="hide" style="margin-top:10px;border-top:1px solid #26314a;padding-top:10px">
+        <label>选择抢机任务（直接复用它的 API 凭证，不用重新填写）</label>
+        <div class="row">
+          <select id="ti_task" style="flex:1;margin-top:0"></select>
+          <button class="btn small" onclick="importTaskCreds()">导入为账号</button>
+        </div>
+        <div class="hint">从任务导入的凭证会保存到<b>本浏览器本地</b>，与手动添加的账号用法完全一样。</div>
       </div>
       <div id="acctForm" class="hide" style="margin-top:10px;border-top:1px solid #26314a;padding-top:10px">
         <label>账号备注名</label><input id="a_name" placeholder="如：我的甲骨文">
@@ -255,11 +275,26 @@ async function refreshList(){
   document.getElementById('taskList').innerHTML=ts.length?ts.map(t=>`
     <div class="card task" onclick="openTask('${t.id}')">
       <div class="row spread"><span class="t">${esc(t.name)}</span>${badge(t.status)}</div>
-      <div class="meta">${t.region} · ${esc(t.spec||'')} · ${t.ssh_mode==='password'?'密码登录':'密钥登录'} · 尝试 ${t.attempts} 次 · 已运行 ${fmtDur(t.elapsed)}</div>
+      <div class="meta">${t.region} · ${t.kind==='amd'?'🖥️ AMD':'⚡ ARM'} ${esc(t.spec||'')} · ${t.ssh_mode==='password'?'密码登录':'密钥登录'} · 尝试 ${t.attempts} 次 · 已运行 ${fmtDur(t.elapsed)}</div>
     </div>`).join(''):'<div class="muted">暂无任务，点上面按钮新建一个。</div>';
 }
 
-function showNew(){document.getElementById('newForm').classList.remove('hide');window.scrollTo(0,document.body.scrollHeight);}
+function showNew(kind){
+  kind=(kind==='amd')?'amd':'arm';
+  const isAmd=kind==='amd';
+  document.getElementById('f_kind').value=kind;
+  document.getElementById('newTitle').textContent=isAmd?'新建 AMD 免费开机任务':'新建 ARM 抢机任务';
+  document.getElementById('amdHint').style.display=isAmd?'':'none';
+  document.getElementById('specRow').style.display=isAmd?'none':'';
+  document.getElementById('amdSpecRow').style.display=isAmd?'':'none';
+  document.getElementById('createBtn').textContent=isAmd?'开始 AMD 开机':'开始 ARM 抢机';
+  document.getElementById('f_name').value=isAmd?'oci-amd-1':'oci-arm-1';
+  document.getElementById('f_image').innerHTML='<option value="">— 请先填 API 信息、选区域，再点上面获取 —</option>';
+  document.getElementById('imgManualWrap').classList.add('hide');
+  document.getElementById('newErr').classList.add('hide');
+  document.getElementById('newForm').classList.remove('hide');
+  window.scrollTo(0,document.body.scrollHeight);
+}
 function hideNew(){document.getElementById('newForm').classList.add('hide');}
 
 // ---- 镜像列表（细分版本） ----
@@ -273,10 +308,12 @@ async function loadImages(){
   if(!region){alert('请先选择目标区域');return;}
   if(!creds.tenancy||!creds.user_ocid||!creds.fingerprint||!creds.private_key){alert('请先填写完整 API 信息');return;}
   btn.disabled=true;btn.textContent='⏳ 获取中…';
+  const kind=document.getElementById('f_kind').value;
+  const shape=((META.kinds||[]).find(k=>k.id===kind)||{}).shape||'VM.Standard.A1.Flex';
   try{
-    const r=await api('/api/mgmt/images','POST',Object.assign(creds,{region:region}));
+    const r=await api('/api/mgmt/images','POST',Object.assign(creds,{region:region,shape:shape}));
     const sel=document.getElementById('f_image');
-    if(!r.images.length){sel.innerHTML='<option value="">该区域未找到 ARM 兼容镜像</option>';return;}
+    if(!r.images.length){sel.innerHTML=`<option value="">该区域未找到${kind==='amd'?' AMD':' ARM'}兼容镜像</option>`;return;}
     const groups={};
     r.images.forEach(im=>{(groups[im.os]=groups[im.os]||[]).push(im);});
     sel.innerHTML=Object.entries(groups).map(([os,ims])=>
@@ -308,7 +345,9 @@ async function createTask(){
     e.textContent='请先获取镜像列表并选择系统版本';e.classList.remove('hide');return;
   }
   const sshmode=(document.querySelector('input[name=sshmode]:checked')||{}).value||'key';
-  const body={tenancy:document.getElementById('f_tenancy').value.trim(),
+  const kind=document.getElementById('f_kind').value;
+  const body={kind:kind,
+    tenancy:document.getElementById('f_tenancy').value.trim(),
     user_ocid:document.getElementById('f_user').value.trim(),
     fingerprint:document.getElementById('f_fp').value.trim(),
     private_key:document.getElementById('f_key').value.trim(),
@@ -409,6 +448,35 @@ function delAccount(){
   const accs=getAccounts(),i=document.getElementById('m_account').value;
   if(!accs[i]||!confirm('删除账号「'+accs[i].name+'」？（仅删除本浏览器保存的信息）'))return;
   accs.splice(i,1);setAccounts(accs);renderAccounts();
+}
+// ---- 从抢机任务导入 API 凭证 ----
+let taskCredCache=[];
+const _stTxt={running:'抢机中',success:'已抢到',failed:'失败',stopped:'已停止'};
+async function toggleTaskImport(){
+  const box=document.getElementById('taskImportBox');
+  if(box.classList.contains('hide')){
+    try{
+      const r=await api('/api/mgmt/task-creds');
+      taskCredCache=r.tasks||[];
+      const sel=document.getElementById('ti_task');
+      sel.innerHTML=taskCredCache.length?taskCredCache.map((t,i)=>
+        `<option value="${i}">${esc(t.task_name)}（${t.region} · ${t.kind==='amd'?'AMD':'ARM'} · ${_stTxt[t.status]||t.status}）</option>`).join('')
+        :'<option value="">暂无可导入的抢机任务</option>';
+    }catch(e){alert('获取任务列表失败：'+e.message);return;}
+  }
+  box.classList.toggle('hide');
+}
+function importTaskCreds(){
+  const t=taskCredCache[document.getElementById('ti_task').value];
+  if(!t){alert('请先选择任务');return;}
+  const accs=getAccounts();
+  const name=t.task_name+'（任务导入）';
+  if(accs.some(a=>a.tenancy===t.tenancy&&a.user_ocid===t.user_ocid)){alert('该任务的账号已导入过');return;}
+  accs.push({name:name,tenancy:t.tenancy,user_ocid:t.user_ocid,
+    fingerprint:t.fingerprint,private_key:t.private_key});
+  setAccounts(accs);renderAccounts();
+  document.getElementById('m_account').value=String(accs.length-1);
+  document.getElementById('taskImportBox').classList.add('hide');
 }
 function acctCreds(a){return {tenancy:a.tenancy,user_ocid:a.user_ocid,fingerprint:a.fingerprint,private_key:a.private_key};}
 

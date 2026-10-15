@@ -50,6 +50,12 @@ REGIONS = [  # (code, 中文名, 分组) —— OCI commercial (OC1) 全区域
 REGION_CODES = {c for c, _, _ in REGIONS}
 OS_CHOICES = {"1": "Oracle Linux", "2": "Canonical Ubuntu"}
 
+# 任务类型 → 实例形状。AMD 免费形状为固定规格 (1/8 OCPU / 1GB), 不可调,
+# 启动时不传 shape-config, 且每个区域只有一个可用性域支持 (轮询 AD)。
+ARM_SHAPE = "VM.Standard.A1.Flex"
+AMD_SHAPE = "VM.Standard.E2.1.Micro"
+TASK_KINDS = {"arm": ARM_SHAPE, "amd": AMD_SHAPE}
+
 RE_OCID = re.compile(r"^ocid1\.[a-z0-9_-]+\.oc[0-9]*\..+")
 RE_FP = re.compile(r"^([0-9a-fA-F]{2}:){15}[0-9a-fA-F]{2}$")
 RE_TID = re.compile(r"^[0-9a-f]{8}$")  # create_task 用 secrets.token_hex(4) 生成
@@ -87,6 +93,10 @@ def init_db():
         boot_gb INTEGER, interval_s INTEGER, ssh_mode TEXT DEFAULT 'key')""")
     try:
         c.execute("ALTER TABLE tasks ADD COLUMN ssh_mode TEXT DEFAULT 'key'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+    try:
+        c.execute("ALTER TABLE tasks ADD COLUMN kind TEXT DEFAULT 'arm'")
     except sqlite3.OperationalError:
         pass  # 列已存在
     c.commit()
@@ -201,6 +211,8 @@ def meta():
     return jsonify({
         "regions": [{"code": c, "name": n, "group": g} for c, n, g in REGIONS],
         "os_choices": [{"id": k, "label": v} for k, v in OS_CHOICES.items()],
+        "kinds": [{"id": "arm", "label": "ARM 抢机", "shape": ARM_SHAPE},
+                  {"id": "amd", "label": "AMD 免费开机", "shape": AMD_SHAPE}],
     })
 
 
@@ -215,6 +227,7 @@ def list_tasks():
         out.append({
             "id": tid, "name": r["name"], "region": r["region"],
             "spec": r["spec"],
+            "kind": r["kind"] if "kind" in r.keys() else "arm",
             "os": OS_CHOICES.get(r["os_choice"], r["os_choice"]),
             "ssh_mode": r["ssh_mode"] if "ssh_mode" in r.keys() else "key",
             "status": read_status(tid), "attempts": log_attempts(tid),
@@ -237,7 +250,11 @@ def create_task():
     image_label = data.get("image_label", "").strip() or image_os
     ssh_mode = data.get("ssh_mode", "key")
     ssh_password = data.get("ssh_password", "")
-    name = data.get("name", "oci-arm-1").strip() or "oci-arm-1"
+    kind = (data.get("kind") or "arm").strip()
+    if kind not in TASK_KINDS:
+        return jsonify({"error": "任务类型无效"}), 400
+    shape = TASK_KINDS[kind]
+    name = data.get("name", "").strip() or ("oci-amd-1" if kind == "amd" else "oci-arm-1")
     try:
         ocpus = int(data.get("ocpus", 4))
         mem = int(data.get("mem", 24))
@@ -259,9 +276,9 @@ def create_task():
         return jsonify({"error": "请选择目标区域"}), 400
     if region not in REGION_CODES:
         return jsonify({"error": "区域无效"}), 400
-    if not (1 <= ocpus <= 4):
+    if not (1 <= ocpus <= 4) and kind == "arm":
         return jsonify({"error": "OCPU 须在 1-4 之间"}), 400
-    if not (1 <= mem <= 24):
+    if not (1 <= mem <= 24) and kind == "arm":
         return jsonify({"error": "内存须在 1-24GB 之间"}), 400
     if not image_id.startswith("ocid1.image."):
         return jsonify({"error": "请选择系统镜像版本（或手动输入镜像 OCID）"}), 400
@@ -309,7 +326,11 @@ def create_task():
         "OCPUS": str(ocpus), "MEM": str(mem),
         "NAME": name, "BOOT_GB": str(boot_gb), "INTERVAL": str(interval),
         "MAX_ATTEMPTS": "0",
+        "SHAPE": shape, "KIND": kind,
     }
+    if kind == "amd":
+        # AMD 免费形状每个区域只有一个 AD 支持, 逐个 AD 轮询
+        conf_vars["ROTATE_AD"] = "1"
     if ssh_mode == "password":
         conf_vars["SSH_PASSWORD"] = ssh_password
     with open(os.path.join(oci_dir, "sniper.conf"), "w") as f:
@@ -324,11 +345,11 @@ def create_task():
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True, cwd=PANEL_DIR, env=env)
 
-    spec_label = "%dC%dG" % (ocpus, mem)
+    spec_label = "AMD 1/8C·1G" if kind == "amd" else "%dC%dG" % (ocpus, mem)
     c = db()
-    c.execute("INSERT INTO tasks(id,name,region,spec,os_choice,status,pid,created_at,stopped,boot_gb,interval_s,ssh_mode) VALUES(?,?,?,?,?,?,?, ?,0,?,?,?)",
+    c.execute("INSERT INTO tasks(id,name,region,spec,os_choice,status,pid,created_at,stopped,boot_gb,interval_s,ssh_mode,kind) VALUES(?,?,?,?,?,?,?, ?,0,?,?,?,?)",
               (tid, name, region, spec_label, image_label, "running", proc.pid,
-               time.time(), boot_gb, interval, ssh_mode))
+               time.time(), boot_gb, interval, ssh_mode, kind))
     c.commit()
     c.close()
     return jsonify({"id": tid})
@@ -344,6 +365,7 @@ def task_detail(tid):
     return jsonify({
         "id": tid, "name": row["name"], "region": row["region"],
         "spec": row["spec"],
+        "kind": row["kind"] if "kind" in row.keys() else "arm",
         "os": OS_CHOICES.get(row["os_choice"], row["os_choice"]),
         "ssh_mode": row["ssh_mode"] if "ssh_mode" in row.keys() else "key",
         "status": read_status(tid), "attempts": log_attempts(tid),
@@ -606,7 +628,7 @@ def mgmt_scan():
 
 @app.route("/api/mgmt/images", methods=["POST"])
 def mgmt_images():
-    """列出某区域 ARM 兼容的平台镜像细分版本（Oracle Linux / Ubuntu）"""
+    """列出某区域某形状兼容的平台镜像细分版本（Oracle Linux / Ubuntu）"""
     import oci, re as _re
     data = request.get_json(force=True, silent=True) or {}
     creds, err = _mgmt_creds(data)
@@ -615,6 +637,9 @@ def mgmt_images():
     region = (data.get("region") or "").strip()
     if region not in REGION_CODES:
         return jsonify({"error": "请先选择目标区域"}), 400
+    shape = (data.get("shape") or ARM_SHAPE).strip()
+    if shape not in (ARM_SHAPE, AMD_SHAPE):
+        return jsonify({"error": "形状无效"}), 400
     try:
         comp = oci.core.ComputeClient(_oci_cfg(creds, region))
         seen, out = set(), []
@@ -622,7 +647,7 @@ def mgmt_images():
             try:
                 imgs = comp.list_images(
                     creds["tenancy"], operating_system=os_name,
-                    shape="VM.Standard.A1.Flex",
+                    shape=shape,
                     sort_by="TIMECREATED", sort_order="DESC", limit=30).data
             except Exception:  # noqa
                 continue
@@ -650,6 +675,51 @@ def mgmt_images():
         return jsonify({"images": out})
     except Exception as e:  # noqa
         return jsonify({"error": "获取镜像列表失败: " + str(e)[:200]}), 400
+
+
+@app.route("/api/mgmt/task-creds", methods=["GET"])
+def mgmt_task_creds():
+    """列出所有抢机任务的 API 凭证，供机器管理页一键导入为账号，
+    有抢机任务就不用重新填写 API。注意：面板无登录，能访问面板的人都能拿到这些凭证。"""
+    c = db()
+    rows = c.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
+    c.close()
+    out = []
+    for r in rows:
+        tid = r["id"]
+        if not RE_TID.match(tid):
+            continue
+        cfg_path = os.path.join(task_dir(tid), ".oci", "config")
+        key_path = os.path.join(task_dir(tid), ".oci", "oci_api_key.pem")
+        if not (os.path.exists(cfg_path) and os.path.exists(key_path)):
+            continue
+        vals = {}
+        try:
+            with open(cfg_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("["):
+                        k, v = line.split("=", 1)
+                        vals[k.strip()] = v.strip()
+            with open(key_path) as f:
+                pkey = f.read()
+        except OSError:
+            continue
+        if not (vals.get("tenancy") and vals.get("user") and vals.get("fingerprint")
+                and "PRIVATE KEY" in pkey):
+            continue
+        out.append({
+            "task_id": tid,
+            "task_name": r["name"],
+            "region": r["region"],
+            "kind": r["kind"] if "kind" in r.keys() else "arm",
+            "status": read_status(tid),
+            "tenancy": vals["tenancy"],
+            "user_ocid": vals["user"],
+            "fingerprint": vals["fingerprint"],
+            "private_key": pkey,
+        })
+    return jsonify({"tasks": out})
 
 
 @app.route("/api/mgmt/terminate", methods=["POST"])
@@ -808,8 +878,18 @@ def _do_enable_ipv6(job_id, creds, region, iid):
             subnet.id,
             oci.core.models.AddSubnetIpv6CidrDetails(
                 ipv6_cidr_block=cidr64))
-        subnet = vnet.get_subnet(subnet.id).data
-        _job_log(job_id, "子网 IPv6: %s" % cidr64)
+        # 子网更新是异步的，等 IPv6 段真正挂载上再继续，
+        # 否则 create_ipv6 会报 "IPv6 is not enabled in this subnet"
+        s6blocks = []
+        for _ in range(12):
+            subnet = vnet.get_subnet(subnet.id).data
+            s6blocks = list(getattr(subnet, "ipv6_cidr_blocks", None) or [])
+            if s6blocks:
+                break
+            _t.sleep(5)
+        if not s6blocks:
+            raise RuntimeError("子网 IPv6 段分配超时，请稍后重试")
+        _job_log(job_id, "子网 IPv6: %s" % s6blocks[0])
     else:
         _job_log(job_id, "子网已有 IPv6: %s" % s6blocks[0])
 
