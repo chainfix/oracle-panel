@@ -401,6 +401,7 @@ async function refreshDetail(){
   let btns='';
   if(t.has_key)btns+=`<a class="btn small" href="/api/tasks/${curTask}/sshkey">⬇ 下载 SSH 私钥</a>`;
   if(t.status==='running')btns+=`<button class="btn danger small" onclick="stopTask()">⏹ 停止</button>`;
+  if(t.status==='stopped')btns+=`<button class="btn small" onclick="startTask()">▶ 启动</button>`;
   btns+=`<button class="btn ghost small" onclick="delTask()">删除任务</button>`;
   document.getElementById('d_btns').innerHTML=btns;
   const lg=await api(`/api/tasks/${curTask}/log?offset=${logOffset}`);
@@ -411,6 +412,7 @@ async function refreshDetail(){
 }
 
 async function stopTask(){if(!confirm('确定停止这个抢机任务吗？'))return;await api(`/api/tasks/${curTask}/stop`,'POST');refreshDetail();}
+async function startTask(){if(!confirm('确定重新启动这个抢机任务吗？'))return;await api(`/api/tasks/${curTask}/start`,'POST');refreshDetail();}
 async function delTask(){if(!confirm('删除任务将同时删除其凭证与日志，确定吗？'))return;await api(`/api/tasks/${curTask}`,'DELETE');backList();}
 
 // ================= 机器管理 =================
