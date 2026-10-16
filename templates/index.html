@@ -76,6 +76,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     <h1 style="font-size:17px" id="newTitle">新建 ARM 抢机任务</h1>
     <input type="hidden" id="f_kind" value="arm">
     <div class="hint" id="amdHint" style="display:none">AMD 免费开机：形状 <b>VM.Standard.E2.1.Micro</b>（1/8 OCPU / 1GB 内存，固定规格，每账号最多 2 台）。<br>注意：① 必须在账号的<b>家区域</b>创建，其他区域会失败；② 每个区域只有一个可用性域支持该形状，任务会自动逐个 AD 轮询；③ 闲置 7 天（CPU/网络/内存使用率持续低于 20%）可能被甲骨文回收。</div>
+    <div id="apiCredBlock">
     <div class="hint">API 凭证获取：OCI 控制台 → 右上角人像 → <b>API 密钥</b> → 添加 API 密钥，下载私钥。<br>填写一次后会自动保存在<b>本浏览器本地</b>，下次直接沿用（只有点"开始"按钮时才会发送到服务器）。<br><a href="javascript:void(0)" onclick="clearApiCache()" style="font-size:13px">清除本浏览器保存的 API 信息</a></div>
     <label>Tenancy OCID</label><input id="f_tenancy" placeholder="ocid1.tenancy.oc1..">
     <label>User OCID</label><input id="f_user" placeholder="ocid1.user.oc1..">
@@ -88,6 +89,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
       <span class="muted">或粘贴 PEM 全文到下方</span>
     </div>
     <textarea id="f_key" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
+    </div>
     <label>目标区域（甲骨文全部可开区域）</label><select id="f_region"></select>
     <div id="specRow">
     <label>实例规格（免费额度内：总计 ≤4 OCPU / ≤24GB 内存）</label>
@@ -131,7 +133,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
     </div>
     <div id="newErr" class="err hide"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" id="createBtn" onclick="createTask()">开始 ARM 抢机</button>
+      <button class="btn" id="createBtn" onclick="submitForm()">开始 ARM 抢机</button>
       <button class="btn ghost" onclick="hideNew()">取消</button>
     </div>
   </div>
@@ -191,7 +193,7 @@ label{display:block;margin:12px 0 2px;font-size:14px;color:#c6cfdf}
 
 <script>
 let META={regions:[],specs:[],os_choices:[]};
-let curTask=null, logTimer=null, logOffset=0;
+let curTask=null, logTimer=null, logOffset=0, editTid=null;
 const CACHE_KEY='oci_panel_api_cache';
 
 // ---- API 信息本地缓存 ----
@@ -284,7 +286,7 @@ async function refreshList(){
     </div>`).join(''):'<div class="muted">暂无任务，点上面按钮新建一个。</div>';
 }
 
-function showNew(kind){
+function setupFormKind(kind){
   kind=(kind==='amd')?'amd':'arm';
   const isAmd=kind==='amd';
   document.getElementById('f_kind').value=kind;
@@ -294,13 +296,39 @@ function showNew(kind){
   document.getElementById('amdSpecRow').style.display=isAmd?'':'none';
   document.getElementById('createBtn').textContent=isAmd?'开始 AMD 开机':'开始 ARM 抢机';
   document.getElementById('f_name').value=isAmd?'oci-amd-1':'oci-arm-1';
+}
+
+function showNew(kind){
+  editTid=null;
+  setupFormKind(kind);
+  document.getElementById('apiCredBlock').style.display='';
+  document.getElementById('imgLoadBtn').onclick=null; // 恢复属性上的 loadImages()
+  document.getElementById('f_sshpw').placeholder='自己设置一个登录密码';
   document.getElementById('f_image').innerHTML='<option value="">— 请先填 API 信息、选区域，再点上面获取 —</option>';
   document.getElementById('imgManualWrap').classList.add('hide');
   document.getElementById('newErr').classList.add('hide');
   document.getElementById('newForm').classList.remove('hide');
   window.scrollTo(0,document.body.scrollHeight);
 }
-function hideNew(){document.getElementById('newForm').classList.add('hide');}
+function hideNew(){
+  document.getElementById('newForm').classList.add('hide');
+  editTid=null;
+  document.getElementById('apiCredBlock').style.display='';
+  document.getElementById('imgLoadBtn').onclick=null;
+  document.getElementById('f_sshpw').placeholder='自己设置一个登录密码';
+}
+
+function fillImageSelect(images, kind){
+  const sel=document.getElementById('f_image');
+  if(!images.length){sel.innerHTML=`<option value="">该区域未找到${kind==='amd'?' AMD':' ARM'}兼容镜像</option>`;return;}
+  const groups={};
+  images.forEach(im=>{(groups[im.os]=groups[im.os]||[]).push(im);});
+  sel.innerHTML=Object.entries(groups).map(([os,ims])=>
+    `<optgroup label="${esc(os)}">`+ims.map(im=>
+      `<option value="${im.id}" data-os="${esc(im.os)}" data-label="${esc(im.label)}">${esc(im.label)}（${esc(im.time)}）</option>`).join('')+`</optgroup>`
+  ).join('')+`<option value="manual">✏️ 手动输入镜像 OCID…</option>`;
+  document.getElementById('imgManualWrap').classList.add('hide');
+}
 
 // ---- 镜像列表（细分版本） ----
 async function loadImages(){
@@ -317,15 +345,20 @@ async function loadImages(){
   const shape=((META.kinds||[]).find(k=>k.id===kind)||{}).shape||'VM.Standard.A1.Flex';
   try{
     const r=await api('/api/mgmt/images','POST',Object.assign(creds,{region:region,shape:shape}));
-    const sel=document.getElementById('f_image');
-    if(!r.images.length){sel.innerHTML=`<option value="">该区域未找到${kind==='amd'?' AMD':' ARM'}兼容镜像</option>`;return;}
-    const groups={};
-    r.images.forEach(im=>{(groups[im.os]=groups[im.os]||[]).push(im);});
-    sel.innerHTML=Object.entries(groups).map(([os,ims])=>
-      `<optgroup label="${esc(os)}">`+ims.map(im=>
-        `<option value="${im.id}" data-os="${esc(im.os)}" data-label="${esc(im.label)}">${esc(im.label)}（${esc(im.time)}）</option>`).join('')+`</optgroup>`
-    ).join('')+`<option value="manual">✏️ 手动输入镜像 OCID…</option>`;
-    document.getElementById('imgManualWrap').classList.add('hide');
+    fillImageSelect(r.images, kind);
+  }catch(e){alert('获取镜像列表失败：'+e.message);}
+  finally{btn.disabled=false;btn.textContent='🔄 获取该区域镜像列表';}
+}
+// 编辑配置时用任务自身的 API 凭证查镜像（凭证不出服务器）
+async function loadEditImages(){
+  const btn=document.getElementById('imgLoadBtn');
+  const region=document.getElementById('f_region').value;
+  const kind=document.getElementById('f_kind').value;
+  if(!region){alert('请先选择目标区域');return;}
+  btn.disabled=true;btn.textContent='⏳ 获取中…';
+  try{
+    const r=await api(`/api/tasks/${editTid}/images`,'POST',{region:region,kind:kind});
+    fillImageSelect(r.images, kind);
   }catch(e){alert('获取镜像列表失败：'+e.message);}
   finally{btn.disabled=false;btn.textContent='🔄 获取该区域镜像列表';}
 }
@@ -334,40 +367,97 @@ function imgSelChanged(){
   document.getElementById('imgManualWrap').classList.toggle('hide',v!=='manual');
 }
 
-async function createTask(){
-  const e=document.getElementById('newErr');e.classList.add('hide');
+function collectImage(){
+  const e=document.getElementById('newErr');
   const imgSel=document.getElementById('f_image');
-  let image_id='',image_os='',image_label='';
   if(imgSel.value==='manual'){
-    image_id=document.getElementById('f_image_manual').value.trim();
-    image_os=(document.querySelector('input[name=oscm]:checked')||{}).value||'Oracle Linux';
-    image_label=image_os+'（手动）';
-    if(!image_id.startsWith('ocid1.image.')){e.textContent='镜像 OCID 格式不对';e.classList.remove('hide');return;}
+    const image_id=document.getElementById('f_image_manual').value.trim();
+    const image_os=(document.querySelector('input[name=oscm]:checked')||{}).value||'Oracle Linux';
+    if(!image_id.startsWith('ocid1.image.')){e.textContent='镜像 OCID 格式不对';e.classList.remove('hide');return null;}
+    return {image_id:image_id,image_os:image_os,image_label:image_os+'（手动）'};
   }else if(imgSel.value){
     const opt=imgSel.selectedOptions[0];
-    image_id=imgSel.value;image_os=opt.dataset.os;image_label=opt.dataset.label;
-  }else{
-    e.textContent='请先获取镜像列表并选择系统版本';e.classList.remove('hide');return;
+    return {image_id:imgSel.value,image_os:opt.dataset.os,image_label:opt.dataset.label};
   }
+  e.textContent='请先获取镜像列表并选择系统版本';e.classList.remove('hide');
+  return null;
+}
+
+function collectConfigBody(){
+  const img=collectImage();
+  if(!img)return null;
   const sshmode=(document.querySelector('input[name=sshmode]:checked')||{}).value||'key';
   const kind=document.getElementById('f_kind').value;
-  const body={kind:kind,
-    tenancy:document.getElementById('f_tenancy').value.trim(),
-    user_ocid:document.getElementById('f_user').value.trim(),
-    fingerprint:document.getElementById('f_fp').value.trim(),
-    private_key:document.getElementById('f_key').value.trim(),
+  return {kind:kind,
     region:document.getElementById('f_region').value,
     ocpus:document.getElementById('f_ocpu').value,
     mem:document.getElementById('f_mem').value,
-    image_id:image_id, image_os:image_os, image_label:image_label, ssh_mode:sshmode,
+    image_id:img.image_id, image_os:img.image_os, image_label:img.image_label, ssh_mode:sshmode,
     ssh_password:document.getElementById('f_sshpw').value,
     name:document.getElementById('f_name').value.trim(),
     boot_gb:document.getElementById('f_boot').value,
     interval:document.getElementById('f_interval').value};
+}
+
+async function createTask(){
+  const e=document.getElementById('newErr');e.classList.add('hide');
+  const body=collectConfigBody();
+  if(!body)return;
+  body.tenancy=document.getElementById('f_tenancy').value.trim();
+  body.user_ocid=document.getElementById('f_user').value.trim();
+  body.fingerprint=document.getElementById('f_fp').value.trim();
+  body.private_key=document.getElementById('f_key').value.trim();
   saveApiCache(); // 创建任务时把 API 信息存到本浏览器
   try{
     const r=await api('/api/tasks','POST',body);
     hideNew();openTask(r.id);
+  }catch(err){e.textContent=err.message;e.classList.remove('hide');}
+}
+
+async function submitForm(){
+  if(editTid){await saveTaskConfig();}else{await createTask();}
+}
+
+// ---- 编辑已停止任务的配置（API 凭证不变） ----
+async function editTask(){
+  const e=document.getElementById('newErr');e.classList.add('hide');
+  let cfg;
+  try{cfg=await api(`/api/tasks/${curTask}/config`);}
+  catch(err){alert('获取当前配置失败：'+err.message);return;}
+  editTid=curTask;
+  setupFormKind(cfg.kind);
+  document.getElementById('newTitle').textContent='✏️ 修改任务配置（仅已停止任务可改）';
+  document.getElementById('apiCredBlock').style.display='none';
+  document.getElementById('createBtn').textContent='💾 保存配置';
+  document.getElementById('imgLoadBtn').onclick=loadEditImages;
+  document.getElementById('f_region').value=cfg.region;
+  document.getElementById('f_ocpu').value=cfg.ocpus;
+  document.getElementById('f_mem').value=cfg.mem;
+  document.getElementById('f_name').value=cfg.name;
+  document.getElementById('f_boot').value=cfg.boot_gb;
+  document.getElementById('f_interval').value=cfg.interval;
+  const sm=document.querySelector(`input[name=sshmode][value="${cfg.ssh_mode}"]`);
+  if(sm)sm.checked=true;
+  document.getElementById('pwRow').classList.toggle('hide',cfg.ssh_mode!=='password');
+  document.getElementById('f_sshpw').value='';
+  document.getElementById('f_sshpw').placeholder='留空则保留原密码';
+  // 镜像：默认手动模式预填当前 OCID，也可点按钮拉取该区域列表重选
+  document.getElementById('f_image').innerHTML=`<option value="manual">✏️ 手动输入镜像 OCID…</option>`;
+  document.getElementById('imgManualWrap').classList.remove('hide');
+  document.getElementById('f_image_manual').value=cfg.image_id||'';
+  const om=document.querySelector(`input[name=oscm][value="${cfg.image_os}"]`);
+  if(om)om.checked=true;
+  document.getElementById('newForm').classList.remove('hide');
+  window.scrollTo(0,document.body.scrollHeight);
+}
+
+async function saveTaskConfig(){
+  const e=document.getElementById('newErr');e.classList.add('hide');
+  const body=collectConfigBody();
+  if(!body)return;
+  try{
+    await api(`/api/tasks/${editTid}/config`,'POST',body);
+    hideNew();refreshDetail();
   }catch(err){e.textContent=err.message;e.classList.remove('hide');}
 }
 
@@ -401,7 +491,7 @@ async function refreshDetail(){
   let btns='';
   if(t.has_key)btns+=`<a class="btn small" href="/api/tasks/${curTask}/sshkey">⬇ 下载 SSH 私钥</a>`;
   if(t.status==='running')btns+=`<button class="btn danger small" onclick="stopTask()">⏹ 停止</button>`;
-  if(t.status==='stopped')btns+=`<button class="btn small" onclick="startTask()">▶ 启动</button>`;
+  if(t.status==='stopped')btns+=`<button class="btn small" onclick="startTask()">▶ 启动</button><button class="btn ghost small" onclick="editTask()">✏️ 修改配置</button>`;
   btns+=`<button class="btn ghost small" onclick="delTask()">删除任务</button>`;
   document.getElementById('d_btns').innerHTML=btns;
   const lg=await api(`/api/tasks/${curTask}/log?offset=${logOffset}`);
