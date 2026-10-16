@@ -145,8 +145,6 @@ def _write_password_hash(sha):
 @app.before_request
 def _require_login():
     p = request.path
-    if p.startswith("/api/heartbeat"):
-        return
     if not _password_is_set():
         if p == "/setup" or p == "/api/setup":
             return
@@ -380,66 +378,154 @@ def list_tasks():
     return jsonify(out)
 
 
-@app.route("/api/tasks", methods=["POST"])
-def create_task():
-    data = request.get_json(force=True, silent=True) or {}
-    tenancy = data.get("tenancy", "").strip()
-    user_ocid = data.get("user_ocid", "").strip()
-    fp = data.get("fingerprint", "").strip()
-    pkey = data.get("private_key", "").strip()
-    region = data.get("region", "").strip()
-    image_id = data.get("image_id", "").strip()
-    image_os = data.get("image_os", "").strip()
-    image_label = data.get("image_label", "").strip() or image_os
-    ssh_mode = data.get("ssh_mode", "key")
-    ssh_password = data.get("ssh_password", "")
+def _validate_task_params(data, require_creds=True):
+    """校验抢机配置参数（新建/修改共用）。
+
+    require_creds=True 时同时校验 API 凭证（新建任务）；
+    False 时跳过凭证校验（修改配置，API 身份不变）。
+    成功返回 (params, None)，失败返回 (None, err_msg)。
+    """
+    p = {}
     kind = (data.get("kind") or "arm").strip()
     if kind not in TASK_KINDS:
-        return jsonify({"error": "任务类型无效"}), 400
-    shape = TASK_KINDS[kind]
-    name = data.get("name", "").strip() or ("oci-amd-1" if kind == "amd" else "oci-arm-1")
+        return None, "任务类型无效"
+    p["kind"] = kind
+    p["shape"] = TASK_KINDS[kind]
+    if require_creds:
+        tenancy = data.get("tenancy", "").strip()
+        user_ocid = data.get("user_ocid", "").strip()
+        fp = data.get("fingerprint", "").strip()
+        pkey = data.get("private_key", "").strip()
+        if not RE_OCID.match(tenancy):
+            return None, "Tenancy OCID 格式不对"
+        if not RE_OCID.match(user_ocid):
+            return None, "User OCID 格式不对"
+        if not RE_FP.match(fp):
+            return None, "指纹格式不对，应为 16 组十六进制以冒号分隔"
+        if "PRIVATE KEY" not in pkey or "BEGIN" not in pkey:
+            return None, "私钥内容不对，请粘贴完整 PEM 或上传私钥文件"
+        p.update(tenancy=tenancy, user_ocid=user_ocid, fingerprint=fp, private_key=pkey)
+    region = data.get("region", "").strip()
+    if not region:
+        return None, "请选择目标区域"
+    if region not in REGION_CODES:
+        return None, "区域无效"
+    p["region"] = region
     try:
         ocpus = int(data.get("ocpus", 4))
         mem = int(data.get("mem", 24))
         boot_gb = int(data.get("boot_gb", 50))
         interval = int(data.get("interval", 45))
     except (ValueError, TypeError):
-        return jsonify({"error": "规格/启动卷/间隔须为数字"}), 400
-
-    # ---- 校验 (避免 snipe.sh 在 AUTO 模式下 ask_ocid 死循环) ----
-    if not RE_OCID.match(tenancy):
-        return jsonify({"error": "Tenancy OCID 格式不对"}), 400
-    if not RE_OCID.match(user_ocid):
-        return jsonify({"error": "User OCID 格式不对"}), 400
-    if not RE_FP.match(fp):
-        return jsonify({"error": "指纹格式不对，应为 16 组十六进制以冒号分隔"}), 400
-    if "PRIVATE KEY" not in pkey or "BEGIN" not in pkey:
-        return jsonify({"error": "私钥内容不对，请粘贴完整 PEM 或上传私钥文件"}), 400
-    if not region:
-        return jsonify({"error": "请选择目标区域"}), 400
-    if region not in REGION_CODES:
-        return jsonify({"error": "区域无效"}), 400
-    if not (1 <= ocpus <= 4) and kind == "arm":
-        return jsonify({"error": "OCPU 须在 1-4 之间"}), 400
-    if not (1 <= mem <= 24) and kind == "arm":
-        return jsonify({"error": "内存须在 1-24GB 之间"}), 400
+        return None, "规格/启动卷/间隔须为数字"
+    if kind == "arm":
+        if not (1 <= ocpus <= 4):
+            return None, "OCPU 须在 1-4 之间"
+        if not (1 <= mem <= 24):
+            return None, "内存须在 1-24GB 之间"
+    p.update(ocpus=ocpus, mem=mem, boot_gb=boot_gb, interval=interval)
+    image_id = data.get("image_id", "").strip()
+    image_os = data.get("image_os", "").strip()
+    image_label = data.get("image_label", "").strip() or image_os
     if not image_id.startswith("ocid1.image."):
-        return jsonify({"error": "请选择系统镜像版本（或手动输入镜像 OCID）"}), 400
+        return None, "请选择系统镜像版本（或手动输入镜像 OCID）"
     if image_os not in ("Oracle Linux", "Canonical Ubuntu"):
-        return jsonify({"error": "镜像系统类型无效"}), 400
+        return None, "镜像系统类型无效"
+    p.update(image_id=image_id, image_os=image_os, image_label=image_label)
+    ssh_mode = data.get("ssh_mode", "key")
     if ssh_mode not in ("key", "password"):
-        return jsonify({"error": "SSH 登录方式无效"}), 400
+        return None, "SSH 登录方式无效"
+    p["ssh_mode"] = ssh_mode
+    ssh_password = data.get("ssh_password") or ""
     if ssh_mode == "password":
-        if not (6 <= len(ssh_password) <= 64):
-            return jsonify({"error": "SSH 密码须为 6-64 位"}), 400
-        if re.search(r"[\r\n\s]", ssh_password):
-            return jsonify({"error": "SSH 密码不能包含空白字符"}), 400
+        if ssh_password:
+            if not (6 <= len(ssh_password) <= 64):
+                return None, "SSH 密码须为 6-64 位"
+            if re.search(r"[\r\n\s]", ssh_password):
+                return None, "SSH 密码不能包含空白字符"
+            p["ssh_password"] = ssh_password
+        elif require_creds:
+            # 新建任务密码登录必须提供密码；修改配置时为空表示保留原密码
+            return None, "SSH 密码须为 6-64 位"
     if not (50 <= boot_gb <= 200):
-        return jsonify({"error": "启动卷须在 50-200GB"}), 400
+        return None, "启动卷须在 50-200GB"
     if not (5 <= interval <= 3600):
-        return jsonify({"error": "重试间隔须在 5-3600 秒"}), 400
+        return None, "重试间隔须在 5-3600 秒"
+    name = data.get("name", "").strip() or ("oci-amd-1" if kind == "amd" else "oci-arm-1")
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$", name):
-        return jsonify({"error": "实例名含非法字符"}), 400
+        return None, "实例名含非法字符"
+    p["name"] = name
+    return p, None
+
+
+def _read_sniper_conf(tid):
+    """读取任务的 sniper.conf 为 dict（值做 shell 反转义）。"""
+    conf = {}
+    p = os.path.join(task_dir(tid), ".oci", "sniper.conf")
+    if not os.path.exists(p):
+        return conf
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        try:
+            toks = shlex.split(v.strip())
+            v = toks[0] if toks else ""
+        except Exception:  # noqa
+            v = v.strip().strip("'\"")
+        conf[k] = v
+    return conf
+
+
+def _task_api_creds(tid):
+    """从任务目录读取 API 凭证（tenancy/user_ocid/fingerprint/key_file/private_key）。
+    失败返回 (None, err)。"""
+    oci_dir = os.path.join(task_dir(tid), ".oci")
+    cfg_path = os.path.join(oci_dir, "config")
+    key_path = os.path.join(oci_dir, "oci_api_key.pem")
+    if not (os.path.exists(cfg_path) and os.path.exists(key_path)):
+        return None, "任务的 API 凭证文件缺失"
+    vals = {}
+    for line in open(cfg_path, encoding="utf-8", errors="replace"):
+        if "=" in line:
+            k, v = line.strip().split("=", 1)
+            vals[k.strip()] = v.strip()
+    if not all(vals.get(k) for k in ("tenancy", "user", "fingerprint")):
+        return None, "任务的 API 凭证不完整"
+    try:
+        pkey = open(key_path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None, "读取 API 私钥失败"
+    if "PRIVATE KEY" not in pkey:
+        return None, "任务的 API 私钥无效"
+    return {"tenancy": vals["tenancy"], "user_ocid": vals["user"],
+            "fingerprint": vals["fingerprint"], "private_key": pkey,
+            "key_file": key_path}, None
+
+
+def _task_row(tid):
+    """取任务 DB 行，不存在返回 None。"""
+    c = db()
+    row = c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+    c.close()
+    return row
+
+
+@app.route("/api/tasks", methods=["POST"])
+def create_task():
+    data = request.get_json(force=True, silent=True) or {}
+    p, err = _validate_task_params(data, require_creds=True)
+    if err:
+        return jsonify({"error": err}), 400
+    tenancy, user_ocid = p["tenancy"], p["user_ocid"]
+    fp, pkey = p["fingerprint"], p["private_key"]
+    region, kind, shape = p["region"], p["kind"], p["shape"]
+    ocpus, mem, boot_gb, interval = p["ocpus"], p["mem"], p["boot_gb"], p["interval"]
+    image_id, image_os, image_label = p["image_id"], p["image_os"], p["image_label"]
+    ssh_mode, name = p["ssh_mode"], p["name"]
+    ssh_password = p.get("ssh_password", "")
 
     tid = secrets.token_hex(4)
     d = task_dir(tid)
@@ -594,6 +680,127 @@ def start_task(tid):
     with open(os.path.join(d, "oci-arm-sniper.log"), "a") as f:
         f.write("[%s] ▶ 用户手动启动任务\n" % datetime.now().strftime("%F %T"))
     return jsonify({"ok": True})
+
+
+def _task_stopped(tid, row):
+    """任务是否处于可修改配置的已停止状态：stopped=1 且进程不在跑。"""
+    if not row["stopped"]:
+        return False
+    return not pid_alive(row["pid"])
+
+
+@app.route("/api/tasks/<tid>/config", methods=["GET"])
+def task_config_get(tid):
+    """读取任务当前可修改的配置（仅已停止任务）。不返回任何密钥/密码。"""
+    row = _task_row(tid)
+    if not row:
+        return jsonify({"error": "任务不存在"}), 404
+    if not _task_stopped(tid, row):
+        return jsonify({"error": "任务未停止，不能查看/修改配置"}), 400
+    conf = _read_sniper_conf(tid)
+    os_choice = conf.get("OS_CHO", "2")
+    return jsonify({
+        "name": row["name"], "region": row["region"],
+        "kind": row["kind"] if "kind" in row.keys() and row["kind"] else "arm",
+        "ocpus": conf.get("OCPUS", "4"), "mem": conf.get("MEM", "24"),
+        "image_id": conf.get("IMAGE", ""),
+        "image_os": "Oracle Linux" if os_choice == "1" else "Canonical Ubuntu",
+        "boot_gb": row["boot_gb"] or 50, "interval": row["interval_s"] or 45,
+        "ssh_mode": row["ssh_mode"] if "ssh_mode" in row.keys() and row["ssh_mode"] else "key",
+    })
+
+
+@app.route("/api/tasks/<tid>/config", methods=["POST"])
+def task_config_update(tid):
+    """修改已停止任务的配置（区域/规格/镜像/实例名/启动卷/间隔/SSH 方式）。
+    API 身份凭证不变。区域变化时丢弃旧区域的 AD/子网，下次启动重建网络。"""
+    row = _task_row(tid)
+    if not row:
+        return jsonify({"error": "任务不存在"}), 404
+    if not _task_stopped(tid, row):
+        return jsonify({"error": "任务未停止，不能修改配置（请先停止任务）"}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    p, err = _validate_task_params(data, require_creds=False)
+    if err:
+        return jsonify({"error": err}), 400
+    creds, cerr = _task_api_creds(tid)
+    if cerr:
+        return jsonify({"error": cerr}), 400
+
+    old_conf = _read_sniper_conf(tid)
+    d = task_dir(tid)
+    oci_dir = os.path.join(d, ".oci")
+    region_changed = old_conf.get("REGION") != p["region"]
+    ssh_user = "opc" if p["image_os"] == "Oracle Linux" else "ubuntu"
+    conf_vars = {
+        "TENANCY": creds["tenancy"], "USER_OCID": creds["user_ocid"],
+        "FINGERPRINT": creds["fingerprint"],
+        "REGION": p["region"], "KEY_FILE": creds["key_file"], "COMPARTMENT": creds["tenancy"],
+        "AD_CHO": "1", "NET_CHO": "1",
+        "OS_CHO": "1" if p["image_os"] == "Oracle Linux" else "2",
+        "IMAGE": p["image_id"], "SSH_USER": ssh_user,
+        "OCPUS": str(p["ocpus"]), "MEM": str(p["mem"]),
+        "NAME": p["name"], "BOOT_GB": str(p["boot_gb"]), "INTERVAL": str(p["interval"]),
+        "MAX_ATTEMPTS": "0", "SHAPE": p["shape"], "KIND": p["kind"],
+    }
+    if p["kind"] == "amd":
+        # AMD 免费形状每个区域只有一个 AD 支持, 逐个 AD 轮询
+        conf_vars["ROTATE_AD"] = "1"
+    if not region_changed:
+        # 同区域：复用已解析的 AD 与子网（下次启动不再重建网络）
+        if old_conf.get("AD"):
+            conf_vars["AD"] = old_conf["AD"]
+        if old_conf.get("SUBNET"):
+            conf_vars["SUBNET"] = old_conf["SUBNET"]
+    if p["ssh_mode"] == "password":
+        # 留空表示保留原密码
+        conf_vars["SSH_PASSWORD"] = p.get("ssh_password") or old_conf.get("SSH_PASSWORD", "")
+    with open(os.path.join(oci_dir, "sniper.conf"), "w") as f:
+        for k, v in conf_vars.items():
+            f.write("%s=%s\n" % (k, shlex.quote(v)))
+    os.chmod(os.path.join(oci_dir, "sniper.conf"), 0o600)
+
+    # .oci/config：区域可能变了，重写
+    with open(os.path.join(oci_dir, "config"), "w") as f:
+        f.write("[DEFAULT]\nuser=%s\nfingerprint=%s\ntenancy=%s\nregion=%s\nkey_file=%s\n"
+                % (creds["user_ocid"], creds["fingerprint"], creds["tenancy"],
+                   p["region"], creds["key_file"]))
+    os.chmod(os.path.join(oci_dir, "config"), 0o600)
+
+    spec_label = "AMD 1/8C·1G" if p["kind"] == "amd" else "%dC%dG" % (p["ocpus"], p["mem"])
+    c = db()
+    c.execute("UPDATE tasks SET name=?,region=?,spec=?,os_choice=?,boot_gb=?,interval_s=?,"
+              "ssh_mode=?,kind=? WHERE id=?",
+              (p["name"], p["region"], spec_label, p["image_label"],
+               p["boot_gb"], p["interval"], p["ssh_mode"], p["kind"], tid))
+    c.commit()
+    c.close()
+    with open(os.path.join(d, "oci-arm-sniper.log"), "a") as f:
+        f.write("[%s] ✏️ 用户修改了任务配置（区域:%s 规格:%s 镜像:%s）%s\n"
+                % (datetime.now().strftime("%F %T"), p["region"], spec_label,
+                   p["image_label"], "；区域已更换，下次启动重建网络" if region_changed else ""))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<tid>/images", methods=["POST"])
+def task_images(tid):
+    """用任务自身的 API 凭证查某区域某形状的镜像列表（编辑配置时用，凭证不出服务器）。"""
+    row = _task_row(tid)
+    if not row:
+        return jsonify({"error": "任务不存在"}), 404
+    data = request.get_json(force=True, silent=True) or {}
+    region = (data.get("region") or row["region"] or "").strip()
+    if region not in REGION_CODES:
+        return jsonify({"error": "区域无效"}), 400
+    kind = (data.get("kind") or (row["kind"] if "kind" in row.keys() else None) or "arm").strip()
+    shape = TASK_KINDS.get(kind, ARM_SHAPE)
+    creds, err = _task_api_creds(tid)
+    if err:
+        return jsonify({"error": err}), 400
+    imgs, err = _list_platform_images(creds, region, shape)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"images": imgs})
 
 
 @app.route("/api/tasks/<tid>", methods=["DELETE"])
@@ -801,20 +1008,9 @@ def mgmt_scan():
     return jsonify({"regions": out})
 
 
-@app.route("/api/mgmt/images", methods=["POST"])
-def mgmt_images():
-    """列出某区域某形状兼容的平台镜像细分版本（Oracle Linux / Ubuntu）"""
+def _list_platform_images(creds, region, shape):
+    """列出某区域某形状兼容的平台镜像细分版本。成功返回 (images, None)，失败返回 (None, err)。"""
     import oci, re as _re
-    data = request.get_json(force=True, silent=True) or {}
-    creds, err = _mgmt_creds(data)
-    if err:
-        return jsonify({"error": err}), 400
-    region = (data.get("region") or "").strip()
-    if region not in REGION_CODES:
-        return jsonify({"error": "请先选择目标区域"}), 400
-    shape = (data.get("shape") or ARM_SHAPE).strip()
-    if shape not in (ARM_SHAPE, AMD_SHAPE):
-        return jsonify({"error": "形状无效"}), 400
     try:
         comp = oci.core.ComputeClient(_oci_cfg(creds, region))
         seen, out = set(), []
@@ -847,9 +1043,28 @@ def mgmt_images():
                     break
         # Oracle Linux 在前，Ubuntu 在后
         out.sort(key=lambda o: (0 if o["os"] == "Oracle Linux" else 1, o["label"]))
-        return jsonify({"images": out})
+        return out, None
     except Exception as e:  # noqa
-        return jsonify({"error": "获取镜像列表失败: " + str(e)[:200]}), 400
+        return None, "获取镜像列表失败: " + str(e)[:200]
+
+
+@app.route("/api/mgmt/images", methods=["POST"])
+def mgmt_images():
+    """列出某区域某形状兼容的平台镜像细分版本（Oracle Linux / Ubuntu）"""
+    data = request.get_json(force=True, silent=True) or {}
+    creds, err = _mgmt_creds(data)
+    if err:
+        return jsonify({"error": err}), 400
+    region = (data.get("region") or "").strip()
+    if region not in REGION_CODES:
+        return jsonify({"error": "请先选择目标区域"}), 400
+    shape = (data.get("shape") or ARM_SHAPE).strip()
+    if shape not in (ARM_SHAPE, AMD_SHAPE):
+        return jsonify({"error": "形状无效"}), 400
+    imgs, err = _list_platform_images(creds, region, shape)
+    if err:
+        return jsonify({"error": err}), 400
+    return jsonify({"images": imgs})
 
 
 @app.route("/api/mgmt/task-creds", methods=["GET"])
@@ -1226,6 +1441,7 @@ def mgmt_job(job_id):
     if not j:
         return jsonify({"error": "任务不存在"}), 404
     return jsonify(j)
+
 
 
 @app.route("/")
