@@ -564,6 +564,38 @@ def stop_task(tid):
     return jsonify({"ok": True})
 
 
+@app.route("/api/tasks/<tid>/start", methods=["POST"])
+def start_task(tid):
+    """重启已停止的抢机任务（任务目录与 sniper.conf 保留，直接重拉进程）。"""
+    c = db()
+    row = c.execute("SELECT pid, stopped FROM tasks WHERE id=?", (tid,)).fetchone()
+    if not row:
+        c.close()
+        return jsonify({"error": "任务不存在"}), 404
+    d = task_dir(tid)
+    if os.path.exists(os.path.join(d, "oci-arm-instance.txt")):
+        c.close()
+        return jsonify({"error": "任务已抢到成功，无需再启动"}), 400
+    if not row["stopped"] and pid_alive(row["pid"]):
+        c.close()
+        return jsonify({"error": "任务正在运行中"}), 400
+    env = snipe_env(d)
+    try:
+        proc = subprocess.Popen(
+            ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, cwd=PANEL_DIR, env=env)
+    except Exception as e:
+        c.close()
+        return jsonify({"error": "启动失败: %s" % e}), 500
+    c.execute("UPDATE tasks SET pid=?, stopped=0, status='running' WHERE id=?", (proc.pid, tid))
+    c.commit()
+    c.close()
+    with open(os.path.join(d, "oci-arm-sniper.log"), "a") as f:
+        f.write("[%s] ▶ 用户手动启动任务\n" % datetime.now().strftime("%F %T"))
+    return jsonify({"ok": True})
+
+
 @app.route("/api/tasks/<tid>", methods=["DELETE"])
 def delete_task(tid):
     c = db()
