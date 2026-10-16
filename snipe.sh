@@ -265,6 +265,22 @@ ask NET_CHO "选择" "1"
 if [ "$NET_CHO" = "2" ]; then
     ask_ocid SUBNET "子网 OCID (ocid1.subnet.oc1..)"
 else
+    # 上次跑完后子网 OCID 已存进 sniper.conf: 还有效就直接复用, 避免每次重跑堆积 VCN/子网
+    REUSE_SUBNET=""
+    case "${SUBNET:-}" in
+        ocid1.subnet.oc1.*)
+            say "检查已保存的子网是否仍可用 ..."
+            SUB_STATE=$(ocit network subnet get --subnet-id "$SUBNET" --region "$REGION" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null) || SUB_STATE=""
+            if [ "$SUB_STATE" = "AVAILABLE" ]; then
+                ok "复用子网: $SUBNET"
+                REUSE_SUBNET=1
+            else
+                warn "已保存的子网不可用 (状态: ${SUB_STATE:-未知}), 将重新创建网络"
+            fi
+            ;;
+    esac
+    if [ -z "$REUSE_SUBNET" ]; then
     say "创建 VCN ..."
     VCN_ID=$(ocit network vcn create --compartment-id "$COMPARTMENT" \
         --cidr-block "10.0.0.0/16" --display-name "sniper-vcn" --dns-label "snipervcn" \
@@ -296,6 +312,7 @@ else
         --query 'data.id' --raw-output --wait-for-state AVAILABLE --max-wait-seconds 120) || SUBNET=""
     [ -n "$SUBNET" ] || { err "子网创建失败"; exit 1; }
     ok "子网: $SUBNET"
+    fi
 fi
 
 # ---------- 7. 镜像 ----------
