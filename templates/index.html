@@ -302,7 +302,7 @@ function showNew(kind){
   editTid=null;
   setupFormKind(kind);
   document.getElementById('apiCredBlock').style.display='';
-  document.getElementById('imgLoadBtn').onclick=null; // 恢复属性上的 loadImages()
+  document.getElementById('imgLoadBtn').onclick=loadImages; // 恢复属性上的 loadImages()
   document.getElementById('f_sshpw').placeholder='自己设置一个登录密码';
   document.getElementById('f_image').innerHTML='<option value="">— 请先填 API 信息、选区域，再点上面获取 —</option>';
   document.getElementById('imgManualWrap').classList.add('hide');
@@ -314,7 +314,7 @@ function hideNew(){
   document.getElementById('newForm').classList.add('hide');
   editTid=null;
   document.getElementById('apiCredBlock').style.display='';
-  document.getElementById('imgLoadBtn').onclick=null;
+  document.getElementById('imgLoadBtn').onclick=loadImages;
   document.getElementById('f_sshpw').placeholder='自己设置一个登录密码';
 }
 
