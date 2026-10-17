@@ -568,7 +568,18 @@ function importTaskCreds(){
   if(!t){alert('请先选择任务');return;}
   const accs=getAccounts();
   const name=t.task_name+'（任务导入）';
-  if(accs.some(a=>a.tenancy===t.tenancy&&a.user_ocid===t.user_ocid)){alert('该任务的账号已导入过');return;}
+  const idx=accs.findIndex(a=>a.tenancy===t.tenancy&&a.user_ocid===t.user_ocid);
+  if(idx>=0){
+    if(accs[idx].fingerprint===t.fingerprint){alert('该任务的账号已导入过');return;}
+    // 同一账号但指纹变了（API 密钥轮换过）：直接更新已存账号的凭证，而不是拒绝导入
+    accs[idx].fingerprint=t.fingerprint;
+    accs[idx].private_key=t.private_key;
+    setAccounts(accs);renderAccounts();
+    document.getElementById('m_account').value=String(idx);
+    document.getElementById('taskImportBox').classList.add('hide');
+    alert('账号「'+accs[idx].name+'」的凭证已更新为任务「'+t.task_name+'」的最新凭证');
+    return;
+  }
   accs.push({name:name,tenancy:t.tenancy,user_ocid:t.user_ocid,
     fingerprint:t.fingerprint,private_key:t.private_key});
   setAccounts(accs);renderAccounts();
