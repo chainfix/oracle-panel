@@ -281,12 +281,31 @@ else
             ;;
     esac
     if [ -z "$REUSE_SUBNET" ]; then
+    # 免费租户只有 2 个 VCN, 面板为每个新任务都新建 VCN: 先按名字复用已存在的
+    # sniper-subnet (同区域/同 compartment), 避免反复建 VCN 触发 LimitExceeded。
+    say "查找可复用的已有子网 sniper-subnet ..."
+    EXIST_SUBNET=$(ocit network subnet list --compartment-id "$COMPARTMENT" --region "$REGION" \
+        --query "data[?\"display-name\"==\`sniper-subnet\` && \"lifecycle-state\"==\`AVAILABLE\`].id | [0]" \
+        --raw-output 2>/dev/null) || EXIST_SUBNET=""
+    if valid_ocid "$EXIST_SUBNET"; then
+        SUBNET="$EXIST_SUBNET"
+        REUSE_SUBNET=1
+        ok "复用已有子网: $SUBNET"
+    fi
+    fi
+    if [ -z "$REUSE_SUBNET" ]; then
     say "创建 VCN ..."
+    VCN_ERR=$(mktemp)
     VCN_ID=$(ocit network vcn create --compartment-id "$COMPARTMENT" \
         --cidr-block "10.0.0.0/16" --display-name "sniper-vcn" --dns-label "snipervcn" \
         --region "$REGION" --query 'data.id' --raw-output \
-        --wait-for-state AVAILABLE --max-wait-seconds 120) || VCN_ID=""
-    [ -n "$VCN_ID" ] || { err "VCN 创建失败"; exit 1; }
+        --wait-for-state AVAILABLE --max-wait-seconds 120 2>"$VCN_ERR") || VCN_ID=""
+    if [ -z "$VCN_ID" ]; then
+        err "VCN 创建失败: $(tr '\n' ' ' < "$VCN_ERR" | cut -c1-800)"
+        rm -f "$VCN_ERR"
+        exit 1
+    fi
+    rm -f "$VCN_ERR"
     ok "VCN: $VCN_ID"
 
     IGW_ID=$(ocit network internet-gateway create --compartment-id "$COMPARTMENT" \
