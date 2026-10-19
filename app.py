@@ -569,10 +569,13 @@ def create_task():
 
     # 启动。PATH 必须包含任务 HOME/.local/bin，见 snipe_env。
     env = snipe_env(d)
-    proc = subprocess.Popen(
-        ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True, cwd=PANEL_DIR, env=env)
+    # snipe.sh 自己把过程写进任务日志; OCI CLI 的报错走 stderr, 这里单独追加到同一
+    # 文件, 否则配额/权限等失败原因会被丢弃 (之前 stderr=DEVNULL, 只剩通用文案)。
+    with open(os.path.join(d, "oci-arm-sniper.log"), "ab") as errlog:
+        proc = subprocess.Popen(
+            ["bash", SNIPE_SH], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=errlog,
+            start_new_session=True, cwd=PANEL_DIR, env=env)
 
     spec_label = "AMD 1/8C·1G" if kind == "amd" else "%dC%dG" % (ocpus, mem)
     c = db()
