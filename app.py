@@ -960,9 +960,14 @@ def mgmt_scan():
         return jsonify({"error": err}), 400
     regions = []
     last_err = None
-    # 家区域不固定，轮询常见区域直到身份认证通过
-    for _r in ("us-phoenix-1", "uk-london-1", "ap-tokyo-1", "ap-osaka-1",
-               "ap-seoul-1", "ap-singapore-1", "eu-frankfurt-1", "us-ashburn-1"):
+    # 家区域不固定，轮询区域直到身份认证通过：常见家区域优先，其余遍历全部区域兜底
+    # （账号只在自己家区域的 identity 端点能过认证，探测名单漏了家区域就会误报 401，
+    #   如 us-sanjose-1 账号曾因此在机器管理里不可用，2026-10-26 修复）
+    _probe = ["us-sanjose-1", "us-phoenix-1", "uk-london-1", "ap-tokyo-1",
+              "ap-osaka-1", "ap-seoul-1", "ap-singapore-1", "eu-frankfurt-1",
+              "us-ashburn-1", "us-chicago-1"]
+    _probe += [c for c, _, _ in REGIONS if c not in _probe]
+    for _r in _probe:
         try:
             ident = oci.identity.IdentityClient(_oci_cfg(creds, _r))
             subs = ident.list_region_subscriptions(creds["tenancy"]).data
