@@ -614,7 +614,7 @@ function instCard(a,region,i){
     <div class="row" style="margin-top:8px" id="btns-${i.id.slice(-12)}">
       <button class="btn small" onclick="changeIp('${esc(region)}','${i.id}','${jsq(i.name)}')">🔄 换 IP</button>
       ${i.ipv6
-        ? '<span class="muted" style="font-size:12px">✓ 已有 IPv6</span>'
+        ? `<button class="btn small" onclick="changeIpv6('${esc(region)}','${i.id}','${jsq(i.name)}')">🔄 更改 IPv6</button>`
         : `<button class="btn small" onclick="enableIpv6('${esc(region)}','${i.id}','${jsq(i.name)}')">🌐 分配 IPv6</button>`}
       <button class="btn small" onclick="rebootInstance('${esc(region)}','${i.id}','${jsq(i.name)}')">↻ 重启</button>
       <button class="btn danger small" onclick="delInstance('${esc(region)}','${i.id}','${jsq(i.name)}')">🗑 删除机器</button>
@@ -636,6 +636,11 @@ async function enableIpv6(region,iid,name){
   const a=curAccount();if(!a)return;
   if(!confirm(`给「${name}」分配 IPv6？\n\n会依次：VCN 启用 IPv6 → 子网划 /64 → 路由加 ::/0 → 安全列表放行 → VNIC 分配地址。\n实例不重启，IPv4 不受影响。`))return;
   startJob(a,'/api/mgmt/ipv6',{region:region,instance_id:iid},iid,'分配 IPv6');
+}
+async function changeIpv6(region,iid,name){
+  const a=curAccount();if(!a)return;
+  if(!confirm(`给「${name}」更改 IPv6？\n\n会先删除旧 IPv6 再随机分配一个新地址（约 1 分钟），中间 IPv6 会短暂中断；旧地址释放后拿不回来。\n实例不重启，IPv4 不受影响。`))return;
+  startJob(a,'/api/mgmt/change-ipv6',{region:region,instance_id:iid},iid,'更改 IPv6');
 }
 async function rebootInstance(region,iid,name){
   const a=curAccount();if(!a)return;
@@ -659,7 +664,7 @@ async function startJob(a,url,extra,iid,label){
         if(j.status!=='running'){
           clearInterval(mgmtTimers[job]);
           if(j.status==='done'){
-            el.innerHTML+=`\n<b style="color:#4ade80">✔ 完成${j.result&&j.result.new_ip?': '+esc(j.result.old_ip)+' → '+esc(j.result.new_ip):''}${j.result&&j.result.note?'（'+esc(j.result.note)+'）':''}${typeof j.result==='string'?'（'+esc(j.result)+'）':''}</b>`;
+            el.innerHTML+=`\n<b style="color:#4ade80">✔ 完成${j.result&&j.result.new_ip?': '+esc(j.result.old_ip)+' → '+esc(j.result.new_ip):''}${j.result&&j.result.new_ipv6?': '+esc(j.result.old_ipv6)+' → '+esc(j.result.new_ipv6):''}${j.result&&j.result.note?'（'+esc(j.result.note)+'）':''}${typeof j.result==='string'?'（'+esc(j.result)+'）':''}</b>`;
             setTimeout(scanMachines,3000);
           }else{
             el.innerHTML+=`\n<b style="color:#ff7b7b">✘ 失败，请查看日志</b>`;

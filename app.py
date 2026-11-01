@@ -1212,6 +1212,19 @@ def mgmt_ipv6():
     return jsonify({"job": _start_job(_do_enable_ipv6, creds, region, iid)})
 
 
+@app.route("/api/mgmt/change-ipv6", methods=["POST"])
+def mgmt_change_ipv6():
+    data = request.get_json(force=True, silent=True) or {}
+    creds, err = _mgmt_creds(data)
+    if err:
+        return jsonify({"error": err}), 400
+    region = data.get("region", "")
+    iid = data.get("instance_id", "")
+    if region not in REGION_CODES or not iid.startswith("ocid1.instance."):
+        return jsonify({"error": "参数无效"}), 400
+    return jsonify({"job": _start_job(_do_change_ipv6, creds, region, iid)})
+
+
 def _do_enable_ipv6(job_id, creds, region, iid):
     """给实例的 VNIC 分配 IPv6。步骤（幂等，缺啥补啥）：
     VCN 加 IPv6 段 → 子网划 /64 → 路由表加 ::/0 → 安全列表放行 IPv6 → VNIC 分配地址。"""
@@ -1356,6 +1369,60 @@ def _do_enable_ipv6(job_id, creds, region, iid):
                  "sudo ip6tables -A INPUT -p tcp --dport 61234 -j ACCEPT && "
                  "sudo ip6tables -A INPUT -p icmpv6 -j ACCEPT && "
                  "sudo netfilter-persistent save")})
+
+
+def _do_change_ipv6(job_id, creds, region, iid):
+    """更换实例 VNIC 的 IPv6：删除现有 IPv6（等彻底释放）→ 重新创建一个，
+    Oracle 从子网 /64 里随机分一个新地址。实例不重启，IPv4 不受影响。
+    VCN/子网/路由/安全列表在分配时已就绪，这里不用重走。"""
+    import oci
+    import time as _t
+    cfg = _oci_cfg(creds, region)
+    comp = oci.core.ComputeClient(cfg)
+    vnet = oci.core.VirtualNetworkClient(cfg)
+    inst = comp.get_instance(iid).data
+    name = inst.display_name or iid[-12:]
+    _job_log(job_id, "实例: %s" % name)
+    atts = comp.list_vnic_attachments(creds["tenancy"], instance_id=iid).data
+    if not atts:
+        raise RuntimeError("找不到该实例的 VNIC")
+    vnic_id = atts[0].vnic_id
+    exist = vnet.list_ipv6s(vnic_id=vnic_id).data
+    if not exist:
+        _job_done(job_id, {"note": "该实例还没有 IPv6，请先点「分配 IPv6」"})
+        return
+    olds = [e.ip_address for e in exist]
+    _job_log(job_id, "当前 IPv6: %s" % ", ".join(olds))
+    _job_log(job_id, "正在删除旧 IPv6（实例保持运行，无需重启）...")
+    for e in exist:
+        vnet.delete_ipv6(e.id)
+    # 与换 IPv4 同理：等旧地址彻底释放再建新的，避免数据层映射冲突
+    _job_log(job_id, "等待旧 IPv6 彻底释放...")
+    for _ in range(36):
+        _t.sleep(5)
+        if not vnet.list_ipv6s(vnic_id=vnic_id).data:
+            break
+    else:
+        raise RuntimeError("旧 IPv6 长时间未释放，请稍后重试")
+    _job_log(job_id, "已释放，正在分配新 IPv6 ...")
+    obj = vnet.create_ipv6(
+        oci.core.models.CreateIpv6Details(vnic_id=vnic_id)).data
+    new6 = ""
+    for _ in range(24):
+        _t.sleep(5)
+        cur = vnet.get_ipv6(obj.id).data
+        new6 = getattr(cur, "ip_address", "") or ""
+        if new6:
+            break
+    if not new6:
+        raise RuntimeError("新 IPv6 已创建但未能读取，请在控制台确认；实例当前可能没有 IPv6")
+    _job_log(job_id, "旧 IPv6: %s -> 新 IPv6: %s" % (", ".join(olds), new6))
+    if new6 in olds:
+        _job_done(job_id, {"old_ipv6": olds[0], "new_ipv6": new6,
+                           "note": "分配到的 IPv6 与之前相同（地址池复用），可再次更换"})
+    else:
+        _job_done(job_id, {"old_ipv6": olds[0], "new_ipv6": new6,
+                           "note": "实例未重启；客机内一般会自动获取新地址（SLAAC），若无地址可尝试 dhclient -6"})
 
 
 def _do_change_ip(job_id, creds, region, iid):
